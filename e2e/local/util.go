@@ -21,11 +21,17 @@ limitations under the License.
 package local
 
 import (
+	"context"
+	"os"
 	"os/exec"
 	"strings"
 
 	. "github.com/apache/camel-k/e2e/support"
+	"github.com/spf13/cobra"
 )
+
+var runtimeRepo = os.Getenv("STAGING_RUNTIME_REPO")
+var runtimeVersion = os.Getenv("RUNTIME_VERSION")
 
 func Docker(args ...string) string {
 	cmd := exec.CommandContext(TestContext, "docker", args...)
@@ -47,4 +53,14 @@ func StopDockerContainers() {
 		args := append([]string{"stop"}, containers...)
 		Docker(args...)
 	}
+}
+
+func kamelWithContext(ctx context.Context, args ...string) *cobra.Command {
+	if runtimeRepo != "" {
+		args = append(args, "--maven-repository", runtimeRepo)
+	}
+	if strings.HasSuffix(runtimeVersion, "-SNAPSHOT") {
+		args = append(args, "--maven-repository", "https://repository.apache.org/content/repositories/snapshots-group@snapshots")
+	}
+	return KamelWithContext(ctx, args...)
 }

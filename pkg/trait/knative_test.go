@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	eventingduckv1 "knative.dev/eventing/pkg/apis/duck/v1"
 	eventing "knative.dev/eventing/pkg/apis/eventing/v1"
@@ -34,6 +35,7 @@ import (
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	knativeapi "github.com/apache/camel-k/pkg/apis/camel/v1/knative"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/client"
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/envvar"
@@ -59,20 +61,21 @@ func TestKnativeEnvConfigurationFromTrait(t *testing.T) {
 				Phase: v1.IntegrationPhaseDeploying,
 			},
 			Spec: v1.IntegrationSpec{
-				Profile:   v1.TraitProfileKnative,
-				Sources:   []v1.SourceSpec{},
-				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"knative": test.TraitSpecFromMap(t, map[string]interface{}{
-						"enabled":         true,
-						"auto":            false,
-						"channelSources":  []string{"channel-source-1"},
-						"channelSinks":    []string{"channel-sink-1"},
-						"endpointSources": []string{"endpoint-source-1"},
-						"endpointSinks":   []string{"endpoint-sink-1", "endpoint-sink-2"},
-						"eventSources":    []string{"knative:event"},
-						"eventSinks":      []string{"knative:event"},
-					}),
+				Profile: v1.TraitProfileKnative,
+				Sources: []v1.SourceSpec{},
+				Traits: v1.Traits{
+					Knative: &traitv1.KnativeTrait{
+						Trait: traitv1.Trait{
+							Enabled: pointer.Bool(true),
+						},
+						Auto:            pointer.Bool(false),
+						ChannelSources:  []string{"channel-source-1"},
+						ChannelSinks:    []string{"channel-sink-1"},
+						EndpointSources: []string{"endpoint-source-1"},
+						EndpointSinks:   []string{"endpoint-sink-1", "endpoint-sink-2"},
+						EventSources:    []string{"knative:event"},
+						EventSinks:      []string{"knative:event"},
+					},
 				},
 			},
 		},
@@ -102,7 +105,7 @@ func TestKnativeEnvConfigurationFromTrait(t *testing.T) {
 
 	tc := NewCatalog(c)
 
-	err = tc.configure(&environment)
+	err = tc.Configure(&environment)
 	assert.Nil(t, err)
 
 	tr, _ := tc.GetTrait("knative").(*knativeTrait)
@@ -187,11 +190,12 @@ func TestKnativeEnvConfigurationFromSource(t *testing.T) {
 						Language: v1.LanguageJavaSource,
 					},
 				},
-				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"knative": test.TraitSpecFromMap(t, map[string]interface{}{
-						"enabled": true,
-					}),
+				Traits: v1.Traits{
+					Knative: &traitv1.KnativeTrait{
+						Trait: traitv1.Trait{
+							Enabled: pointer.Bool(true),
+						},
+					},
 				},
 			},
 		},
@@ -221,7 +225,7 @@ func TestKnativeEnvConfigurationFromSource(t *testing.T) {
 
 	tc := NewCatalog(c)
 
-	err = tc.configure(&environment)
+	err = tc.Configure(&environment)
 	assert.Nil(t, err)
 
 	tr, _ := tc.GetTrait("knative").(*knativeTrait)
@@ -289,7 +293,7 @@ func TestKnativePlatformHttpConfig(t *testing.T) {
 
 			tc := NewCatalog(c)
 
-			err = tc.configure(&environment)
+			err = tc.Configure(&environment)
 			assert.Nil(t, err)
 
 			err = tc.apply(&environment)
@@ -336,7 +340,7 @@ func TestKnativePlatformHttpDependencies(t *testing.T) {
 
 			tc := NewCatalog(c)
 
-			err = tc.configure(&environment)
+			err = tc.Configure(&environment)
 			assert.Nil(t, err)
 
 			err = tc.apply(&environment)
@@ -372,11 +376,12 @@ func NewFakeEnvironment(t *testing.T, source v1.SourceSpec) Environment {
 				Sources: []v1.SourceSpec{
 					source,
 				},
-				Resources: []v1.ResourceSpec{},
-				Traits: map[string]v1.TraitSpec{
-					"knative": test.TraitSpecFromMap(t, map[string]interface{}{
-						"enabled": true,
-					}),
+				Traits: v1.Traits{
+					Knative: &traitv1.KnativeTrait{
+						Trait: traitv1.Trait{
+							Enabled: pointer.Bool(true),
+						},
+					},
 				},
 			},
 		},
@@ -391,8 +396,12 @@ func NewFakeEnvironment(t *testing.T, source v1.SourceSpec) Environment {
 				Build: v1.IntegrationPlatformBuildSpec{
 					PublishStrategy: v1.IntegrationPlatformBuildPublishStrategyS2I,
 					Registry:        v1.RegistrySpec{Address: "registry"},
+					RuntimeVersion:  catalog.Runtime.Version,
 				},
 				Profile: v1.TraitProfileKnative,
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),

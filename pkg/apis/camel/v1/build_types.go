@@ -66,11 +66,6 @@ type BuilderTask struct {
 	BaseImage string `json:"baseImage,omitempty"`
 	// the configuration required for the runtime application
 	Runtime RuntimeSpec `json:"runtime,omitempty"`
-	// Deprecated: no longer in use
-	// the source code for the Route(s)
-	Sources []SourceSpec `json:"sources,omitempty"`
-	// Deprecated: no longer in use
-	Resources []ResourceSpec `json:"resources,omitempty"`
 	// the list of dependencies to use for this build
 	Dependencies []string `json:"dependencies,omitempty"`
 	// the list of steps to execute (see pkg/builder/)
@@ -87,6 +82,8 @@ type MavenBuildSpec struct {
 	MavenSpec `json:",inline"`
 	// additional repositories
 	Repositories []Repository `json:"repositories,omitempty"`
+	// Servers (auth)
+	Servers []Server `json:"servers,omitempty"`
 }
 
 // PublishTask image publish configuration
@@ -105,8 +102,12 @@ type PublishTask struct {
 type BuildahTask struct {
 	BaseTask    `json:",inline"`
 	PublishTask `json:",inline"`
+	// The platform of build image
+	Platform string `json:"platform,omitempty"`
 	// log more information
 	Verbose *bool `json:"verbose,omitempty"`
+	// docker image to use
+	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
 // KanikoTask is used to configure Kaniko
@@ -117,6 +118,8 @@ type KanikoTask struct {
 	Verbose *bool `json:"verbose,omitempty"`
 	// use a cache
 	Cache KanikoTaskCache `json:"cache,omitempty"`
+	// docker image to use
+	ExecutorImage string `json:"executorImage,omitempty"`
 }
 
 // KanikoTaskCache is used to configure Kaniko cache
@@ -144,6 +147,8 @@ type S2iTask struct {
 
 // BuildStatus defines the observed state of Build
 type BuildStatus struct {
+	// ObservedGeneration is the most recent generation observed for this Build.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// describes the phase
 	Phase BuildPhase `json:"phase,omitempty"`
 	// the image name built

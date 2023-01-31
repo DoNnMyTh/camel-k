@@ -69,25 +69,12 @@ func (in *Integration) Sources() []SourceSpec {
 	return sources
 }
 
-// Resources return a new slice containing all the resources associated to the integration
-func (in *Integration) Resources() []ResourceSpec {
-	resources := make([]ResourceSpec, 0, len(in.Spec.Resources)+len(in.Status.GeneratedResources))
-	resources = append(resources, in.Spec.Resources...)
-	resources = append(resources, in.Status.GeneratedResources...)
-
-	return resources
-}
-
 func (in *IntegrationSpec) AddSource(name string, content string, language Language) {
 	in.Sources = append(in.Sources, NewSourceSpec(name, content, language))
 }
 
 func (in *IntegrationSpec) AddSources(sources ...SourceSpec) {
 	in.Sources = append(in.Sources, sources...)
-}
-
-func (in *IntegrationSpec) AddResources(resources ...ResourceSpec) {
-	in.Resources = append(in.Resources, resources...)
 }
 
 func (in *IntegrationSpec) AddFlows(flows ...Flow) {
@@ -105,20 +92,12 @@ func (in *IntegrationSpec) AddDependency(dependency string) {
 	if in.Dependencies == nil {
 		in.Dependencies = make([]string, 0)
 	}
-	newDep := dependency
-	if strings.HasPrefix(newDep, "camel-quarkus-") {
-		newDep = "camel:" + strings.TrimPrefix(dependency, "camel-quarkus-")
-	} else if strings.HasPrefix(newDep, "camel-quarkus:") {
-		newDep = "camel:" + strings.TrimPrefix(dependency, "camel-quarkus:")
-	} else if strings.HasPrefix(newDep, "camel-") {
-		newDep = "camel:" + strings.TrimPrefix(dependency, "camel-")
-	}
 	for _, d := range in.Dependencies {
-		if d == newDep {
+		if d == dependency {
 			return
 		}
 	}
-	in.Dependencies = append(in.Dependencies, newDep)
+	in.Dependencies = append(in.Dependencies, dependency)
 }
 
 // GetConfigurationProperty returns a configuration property
@@ -139,25 +118,6 @@ func trimFirstLeadingSpace(val string) string {
 		return val[1:]
 	}
 	return val
-}
-
-func (in *IntegrationStatus) AddOrReplaceGeneratedResources(resources ...ResourceSpec) {
-	newResources := make([]ResourceSpec, 0)
-	for _, resource := range resources {
-		replaced := false
-		for i, r := range in.GeneratedResources {
-			if r.Name == resource.Name {
-				in.GeneratedResources[i] = resource
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			newResources = append(newResources, resource)
-		}
-	}
-
-	in.GeneratedResources = append(in.GeneratedResources, newResources...)
 }
 
 func (in *IntegrationStatus) AddOrReplaceGeneratedSources(sources ...SourceSpec) {
@@ -255,6 +215,11 @@ func (in *SourceSpec) InferLanguage() Language {
 	return ""
 }
 
+// SetOperatorID sets the given operator id as an annotation
+func (in *Integration) SetOperatorID(operatorID string) {
+	SetAnnotation(&in.ObjectMeta, OperatorIDAnnotation, operatorID)
+}
+
 func (in *Integration) SetIntegrationPlatform(platform *IntegrationPlatform) {
 	cs := corev1.ConditionTrue
 
@@ -267,6 +232,11 @@ func (in *Integration) SetIntegrationPlatform(platform *IntegrationPlatform) {
 }
 
 func (in *Integration) SetIntegrationKit(kit *IntegrationKit) {
+	if kit == nil {
+		in.Status.IntegrationKit = nil
+		return
+	}
+
 	cs := corev1.ConditionTrue
 	message := kit.Name
 	if kit.Status.Phase != IntegrationKitPhaseReady {
@@ -301,6 +271,29 @@ func (in *Integration) GetIntegrationKitNamespace(p *IntegrationPlatform) string
 		return p.Namespace
 	}
 	return in.Namespace
+}
+
+// IsConditionTrue checks if the condition with the given type is true.
+func (in *Integration) IsConditionTrue(conditionType IntegrationConditionType) bool {
+	if in == nil {
+		return false
+	}
+	cond := in.Status.GetCondition(conditionType)
+	if cond == nil {
+		return false
+	}
+
+	return cond.Status == corev1.ConditionTrue
+}
+
+// SetReadyCondition sets Ready condition with the given status, reason, and message.
+func (in *Integration) SetReadyCondition(status corev1.ConditionStatus, reason, message string) {
+	in.Status.SetCondition(IntegrationConditionReady, status, reason, message)
+}
+
+// SetReadyConditionError sets Ready condition to False with the given error message.
+func (in *Integration) SetReadyConditionError(err string) {
+	in.SetReadyCondition(corev1.ConditionFalse, IntegrationConditionErrorReason, err)
 }
 
 // GetCondition returns the condition with the provided type.

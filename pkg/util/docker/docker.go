@@ -19,7 +19,7 @@ package docker
 
 import (
 	"os/exec"
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/apache/camel-k/pkg/util"
@@ -38,9 +38,8 @@ func CreateBaseImageDockerFile() error {
 	dockerFile = append(dockerFile, RUNMavenInstall())
 
 	// Write <BaseWorkingDirectory>/Dockerfile
-	baseDockerFilePath := path.Join(BaseWorkingDirectory, "Dockerfile")
-	err := util.WriteToFile(baseDockerFilePath, strings.Join(dockerFile, "\n"))
-	if err != nil {
+	baseDockerFilePath := filepath.Join(BaseWorkingDirectory, "Dockerfile")
+	if err := util.WriteToFile(baseDockerFilePath, strings.Join(dockerFile, "\n")); err != nil {
 		return err
 	}
 
@@ -83,7 +82,7 @@ func CreateIntegrationImageDockerFile(integrationRunCmd *exec.Cmd, startsFromLoc
 	dockerFile = append(dockerFile, CMDShellWrap(strings.Join(integrationRunCmd.Args, " ")))
 
 	// Write <IntegrationWorkingDirectory>/Dockerfile
-	integrationDockerFilePath := path.Join(IntegrationWorkingDirectory, "Dockerfile")
+	integrationDockerFilePath := filepath.Join(IntegrationWorkingDirectory, "Dockerfile")
 	err := util.WriteToFile(integrationDockerFilePath, strings.Join(dockerFile, "\n"))
 	if err != nil {
 		return err
@@ -92,31 +91,27 @@ func CreateIntegrationImageDockerFile(integrationRunCmd *exec.Cmd, startsFromLoc
 	return nil
 }
 
-// BuildBaseImageArgs --.
+// BuildBaseImageArgs constructs the docker command:
+//
+// docker build -f <BaseWorkingDirectory>/Dockerfile -t <dockerRegistry>/<BaseImageName> <BaseWorkingDirectory>.
+//
 func BuildBaseImageArgs() []string {
-	// Construct the docker command:
-	//
-	// docker build -f <BaseWorkingDirectory>/Dockerfile -t <dockerRegistry>/<BaseImageName> <BaseWorkingDirectory>
-	//
-	// Add register
 	return BuildImageArgs(BaseWorkingDirectory, GetBaseImagePath(), BaseWorkingDirectory)
 }
 
-// BuildIntegrationImageArgs --.
-func BuildIntegrationImageArgs(imagePath string) []string {
-	// Construct the docker command:
-	//
-	// docker build -f <BaseWorkingDirectory>/Dockerfile -t <imagePath> <MavenWorkingDirectory>
-	//
-	return BuildImageArgs(IntegrationWorkingDirectory, imagePath, util.MavenWorkingDirectory)
+// BuildIntegrationImageArgs constructs the docker command:
+//
+// docker build -f <BaseWorkingDirectory>/Dockerfile -t <imagePath> <mavenWorkingDirectory>.
+//
+func BuildIntegrationImageArgs(imagePath string, mavenWorkingDirectory string) []string {
+	return BuildImageArgs(IntegrationWorkingDirectory, imagePath, mavenWorkingDirectory)
 }
 
-// RunIntegrationImageArgs --.
+// RunIntegrationImageArgs constructs the docker command:
+//
+// docker run --network=<network-name> --env LAZY_ENV_VAR=value <dockerRegistry>/<ImageName>.
+//
 func RunIntegrationImageArgs(imagePath string) ([]string, error) {
-	// Construct the docker command:
-	//
-	// docker run --network=<network-name> --env LAZY_ENV_VAR=value <dockerRegistry>/<ImageName>
-	//
 	return RunImageArgs(imagePath, latestTag)
 }
 
@@ -144,7 +139,7 @@ func GetContainerRoutesDir() string {
 func ContainerizeFilePaths(currentFilePaths []string, newDir string) []string {
 	newFilePaths := []string{}
 	for _, currentFilePath := range currentFilePaths {
-		newFilePaths = append(newFilePaths, newDir+containerFileSeparator+path.Base(currentFilePath))
+		newFilePaths = append(newFilePaths, newDir+containerFileSeparator+filepath.Base(currentFilePath))
 	}
 
 	return newFilePaths
@@ -158,7 +153,7 @@ func ContainerizeDependencyPaths(dependencyPaths []string, newDir string) []stri
 		if newDependencyPath != "" {
 			newDependencyPaths = append(newDependencyPaths, newDir+newDependencyPath)
 		} else {
-			newDependencyPaths = append(newDependencyPaths, newDir+containerFileSeparator+path.Base(currentDependencyPath))
+			newDependencyPaths = append(newDependencyPaths, newDir+containerFileSeparator+filepath.Base(currentDependencyPath))
 		}
 	}
 	return newDependencyPaths

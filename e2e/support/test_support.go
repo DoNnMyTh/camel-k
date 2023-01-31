@@ -33,6 +33,8 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +48,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/batch/v1beta1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordination "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -71,6 +73,7 @@ import (
 
 	"github.com/apache/camel-k/e2e/support/util"
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/apis/camel/v1alpha1"
 	"github.com/apache/camel-k/pkg/client"
 	"github.com/apache/camel-k/pkg/cmd"
@@ -92,8 +95,32 @@ var TestTimeoutShort = 1 * time.Minute
 var TestTimeoutMedium = 5 * time.Minute
 var TestTimeoutLong = 10 * time.Minute
 
+// TestTimeoutVeryLong should be used only for testing native builds.
+var TestTimeoutVeryLong = 90 * time.Minute
+
+var NoOlmOperatorImage string
+
 var TestContext context.Context
 var testClient client.Client
+
+var testLocus *testing.T
+
+func setTestLocus(t *testing.T) {
+	testLocus = t
+}
+
+// Only panic the test if absolutely necessary and there is
+// no test locus. In most cases, the test should fail gracefully
+// using the test locus to error out and fail now.
+func failTest(err error) {
+	if testLocus != nil {
+		testLocus.Helper()
+		testLocus.Error(err)
+		testLocus.FailNow()
+	} else {
+		panic(err)
+	}
+}
 
 func TestClient() client.Client {
 	if testClient != nil {
@@ -102,7 +129,7 @@ func TestClient() client.Client {
 	var err error
 	testClient, err = NewTestClient()
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	return testClient
 }
@@ -111,7 +138,7 @@ func SyncClient() client.Client {
 	var err error
 	testClient, err = NewTestClient()
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	return testClient
 }
@@ -165,6 +192,14 @@ func init() {
 		}
 	}
 
+	if imageNoOlm, ok := os.LookupEnv("CAMEL_K_TEST_NO_OLM_OPERATOR_IMAGE"); ok {
+		if imageNoOlm != "" {
+			NoOlmOperatorImage = imageNoOlm
+		} else {
+			fmt.Printf("Can't parse CAMEL_K_TEST_NO_OLM_OPERATOR_IMAGE. Using default value from kamel")
+		}
+	}
+
 	if value, ok := os.LookupEnv("CAMEL_K_TEST_TIMEOUT_LONG"); ok {
 		if duration, err = time.ParseDuration(value); err == nil {
 			TestTimeoutLong = duration
@@ -188,9 +223,135 @@ func Kamel(args ...string) *cobra.Command {
 	return KamelWithContext(TestContext, args...)
 }
 
+func KamelInstall(namespace string, args ...string) *cobra.Command {
+	return KamelInstallWithID(platform.DefaultPlatformName, namespace, args...)
+}
+
+func KamelInstallWithID(operatorID string, namespace string, args ...string) *cobra.Command {
+	return kamelInstallWithContext(TestContext, operatorID, namespace, true, args...)
+}
+
+func KamelInstallWithIDAndKameletCatalog(operatorID string, namespace string, args ...string) *cobra.Command {
+	return kamelInstallWithContext(TestContext, operatorID, namespace, false, args...)
+}
+
+func kamelInstallWithContext(ctx context.Context, operatorID string, namespace string, skipKameletCatalog bool, args ...string) *cobra.Command {
+	var installArgs []string
+
+	globalTest := os.Getenv("CAMEL_K_FORCE_GLOBAL_TEST") == "true"
+	if globalTest {
+		fmt.Printf("Executing as global test\n")
+
+		if err := verifyGlobalOperator(); err != nil {
+			failTest(err)
+		}
+
+		// Have a global operator pod watching all namespaces
+		// so ensure an integration platform is installed in target namespace
+		installArgs = []string{"install", "--skip-operator-setup", "-n", namespace}
+	} else {
+		// NOT global so proceed with local namespaced kamel install using the operator id
+		installArgs = []string{"install", "-n", namespace, "--operator-id", operatorID}
+	}
+
+	if skipKameletCatalog {
+		installArgs = append(installArgs, "--operator-env-vars", "KAMEL_INSTALL_DEFAULT_KAMELETS=false")
+	}
+
+	logLevel := os.Getenv("CAMEL_K_TEST_LOG_LEVEL")
+	if len(logLevel) > 0 {
+		fmt.Printf("Setting log-level to %s\n", logLevel)
+		installArgs = append(installArgs, "--log-level", logLevel)
+	}
+
+	mvnCLIOptions := os.Getenv("CAMEL_K_TEST_MAVEN_CLI_OPTIONS")
+	if len(mvnCLIOptions) > 0 {
+		// Split the string by spaces
+		mvnCLIArr := strings.Split(mvnCLIOptions, " ")
+		for _, mc := range mvnCLIArr {
+			mc = strings.Trim(mc, " ")
+			if len(mc) == 0 {
+				continue
+			}
+
+			fmt.Printf("Adding maven cli option %s\n", mc)
+			installArgs = append(installArgs, "--maven-cli-option", mc)
+		}
+	}
+
+	installArgs = append(installArgs, args...)
+	return KamelWithContext(ctx, installArgs...)
+}
+
+func KamelRun(namespace string, args ...string) *cobra.Command {
+	return KamelRunWithID(platform.DefaultPlatformName, namespace, args...)
+}
+
+func KamelRunWithID(operatorID string, namespace string, args ...string) *cobra.Command {
+	return KamelRunWithContext(TestContext, operatorID, namespace, args...)
+}
+
+func KamelRunWithContext(ctx context.Context, operatorID string, namespace string, args ...string) *cobra.Command {
+	return KamelCommandWithContext(ctx, "run", operatorID, namespace, args...)
+}
+
+func KamelBind(namespace string, args ...string) *cobra.Command {
+	return KamelBindWithID(platform.DefaultPlatformName, namespace, args...)
+}
+
+func KamelBindWithID(operatorID string, namespace string, args ...string) *cobra.Command {
+	return KamelBindWithContext(TestContext, operatorID, namespace, args...)
+}
+
+func KamelBindWithContext(ctx context.Context, operatorID string, namespace string, args ...string) *cobra.Command {
+	return KamelCommandWithContext(ctx, "bind", operatorID, namespace, args...)
+}
+
+func KamelCommandWithContext(ctx context.Context, command string, operatorID string, namespace string, args ...string) *cobra.Command {
+	var cmdArgs []string
+
+	globalTest := os.Getenv("CAMEL_K_FORCE_GLOBAL_TEST") == "true"
+	if globalTest {
+		fmt.Printf("Running as globally managed resource\n")
+
+		if err := verifyGlobalOperator(); err != nil {
+			failTest(err)
+		}
+
+		// Have a global operator reconciling the integration
+		cmdArgs = []string{command, "-n", namespace}
+	} else {
+		// NOT global so proceed with local namespaced operator reconciling the integration
+		cmdArgs = []string{command, "-n", namespace, "--operator-id", operatorID}
+	}
+
+	cmdArgs = append(cmdArgs, args...)
+	return KamelWithContext(ctx, cmdArgs...)
+}
+
+func verifyGlobalOperator() error {
+	opns := os.Getenv("CAMEL_K_GLOBAL_OPERATOR_NS")
+	if opns == "" {
+		return errors.New("No operator namespace defined in CAMEL_K_GLOBAL_OPERATOR_NS")
+	}
+
+	oppod := OperatorPod(opns)()
+	if oppod == nil {
+		return fmt.Errorf("No operator pod detected in namespace %s. Operator install is a pre-requisite of the test", opns)
+	}
+
+	return nil
+}
+
 func KamelWithContext(ctx context.Context, args ...string) *cobra.Command {
 	var c *cobra.Command
 	var err error
+
+	if os.Getenv("CAMEL_K_TEST_LOG_LEVEL") == "debug" {
+		fmt.Printf("Executing kamel with command %+q\n", args)
+		fmt.Println("Printing stack for KamelWithContext")
+		debug.PrintStack()
+	}
 
 	kamelArgs := os.Getenv("KAMEL_ARGS")
 	kamelDefaultArgs := strings.Fields(kamelArgs)
@@ -199,7 +360,7 @@ func KamelWithContext(ctx context.Context, args ...string) *cobra.Command {
 	kamelBin := os.Getenv("KAMEL_BIN")
 	if kamelBin != "" {
 		if _, e := os.Stat(kamelBin); e != nil && os.IsNotExist(e) {
-			panic(e)
+			failTest(e)
 		}
 		fmt.Printf("Using external kamel binary on path %s\n", kamelBin)
 		c = &cobra.Command{
@@ -209,7 +370,7 @@ func KamelWithContext(ctx context.Context, args ...string) *cobra.Command {
 				var stdout io.Reader
 				stdout, err = externalBin.StdoutPipe()
 				if err != nil {
-					panic(err)
+					failTest(err)
 				}
 				err := externalBin.Start()
 				if err != nil {
@@ -231,7 +392,7 @@ func KamelWithContext(ctx context.Context, args ...string) *cobra.Command {
 		c, args, err = cmd.NewKamelWithModelineCommand(ctx, append([]string{"kamel"}, args...))
 	}
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	for _, hook := range KamelHooks {
 		args = hook(args)
@@ -245,21 +406,22 @@ func Make(rule string, args ...string) *exec.Cmd {
 }
 
 func MakeWithContext(ctx context.Context, rule string, args ...string) *exec.Cmd {
-	makeArgs := os.Getenv("MAKE_ARGS")
+	makeArgs := os.Getenv("CAMEL_K_TEST_MAKE_ARGS")
 	defaultArgs := strings.Fields(makeArgs)
 	args = append(defaultArgs, args...)
 
-	makeDir := os.Getenv("MAKE_DIR")
+	defaultDir := "../../../../install"
+	makeDir := os.Getenv("CAMEL_K_TEST_MAKE_DIR")
 	if makeDir == "" {
-		makeDir = "../../../install"
-	} else {
-		fmt.Printf("Using alternative make directory on path %s\n", makeDir)
+		makeDir = defaultDir
+	} else if makeDir != defaultDir {
+		fmt.Printf("Using alternative make directory on path: %s\n", makeDir)
 	}
 
 	if fi, e := os.Stat(makeDir); e != nil && os.IsNotExist(e) {
-		panic(e)
+		failTest(e)
 	} else if !fi.Mode().IsDir() {
-		panic(e)
+		failTest(e)
 	}
 
 	args = append([]string{"-C", makeDir, rule}, args...)
@@ -267,9 +429,9 @@ func MakeWithContext(ctx context.Context, rule string, args ...string) *exec.Cmd
 	return exec.Command("make", args...)
 }
 
-/*
-	Curryied utility functions for testing
-*/
+// =============================================================================
+// Curried utility functions for testing
+// =============================================================================
 
 func IntegrationLogs(ns, name string) func() string {
 	return func() string {
@@ -279,7 +441,7 @@ func IntegrationLogs(ns, name string) func() string {
 		}
 
 		options := corev1.PodLogOptions{
-			TailLines: pointer.Int64Ptr(100),
+			TailLines: pointer.Int64(100),
 		}
 
 		if len(pod.Spec.Containers) > 1 {
@@ -287,6 +449,17 @@ func IntegrationLogs(ns, name string) func() string {
 		}
 
 		return Logs(ns, pod.Name, options)()
+	}
+}
+
+// Retrieve the Logs from the Pod defined by its name in the given namespace ns. The number of lines numLines from the end of the logs to show.
+func TailedLogs(ns, name string, numLines int64) func() string {
+	return func() string {
+		options := corev1.PodLogOptions{
+			TailLines: pointer.Int64(numLines),
+		}
+
+		return Logs(ns, name, options)()
 	}
 }
 
@@ -312,30 +485,34 @@ func Logs(ns, podName string, options corev1.PodLogOptions) func() string {
 	}
 }
 
-func StructuredLogs(ns, podName string, options corev1.PodLogOptions, ignoreParseErrors bool) []util.LogEntry {
-	byteReader, err := TestClient().CoreV1().Pods(ns).GetLogs(podName, &options).Stream(TestContext)
+func StructuredLogs(ns, podName string, options *corev1.PodLogOptions, ignoreParseErrors bool) ([]util.LogEntry, error) {
+
+	stream, err := TestClient().CoreV1().Pods(ns).GetLogs(podName, options).Stream(TestContext)
 	if err != nil {
-		log.Error(err, "Error while reading container logs")
-		return nil
+		msg := "Error while reading container logs"
+		log.Error(err, msg)
+		return nil, fmt.Errorf("%s: %w\n", msg, err)
 	}
 	defer func() {
-		if err := byteReader.Close(); err != nil {
+		if err := stream.Close(); err != nil {
 			log.Error(err, "Error closing the stream")
 		}
 	}()
 
 	entries := make([]util.LogEntry, 0)
-	scanner := bufio.NewScanner(byteReader)
+	scanner := bufio.NewScanner(stream)
 	for scanner.Scan() {
 		entry := util.LogEntry{}
 		t := scanner.Text()
 		err := json.Unmarshal([]byte(t), &entry)
 		if err != nil {
 			if ignoreParseErrors {
+				fmt.Printf("Warning: Ignoring parse error for logging line: %q\n", t)
 				continue
 			} else {
-				log.Errorf(err, "Unable to parse structured content: %s", t)
-				return nil
+				msg := fmt.Sprintf("Unable to parse structured content: %s", t)
+				log.Errorf(err, msg)
+				return nil, fmt.Errorf("%s %w\n", msg, err)
 			}
 		}
 
@@ -343,11 +520,18 @@ func StructuredLogs(ns, podName string, options corev1.PodLogOptions, ignorePars
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Error(err, "Error while scanning container logs")
-		return nil
+		msg := "Error while scanning container logs"
+		log.Error(err, msg)
+		return nil, fmt.Errorf("%s %w\n", msg, err)
 	}
 
-	return entries
+	if len(entries) == 0 {
+		msg := "Error fetched zero log entries"
+		log.Error(err, msg)
+		return nil, fmt.Errorf("%s %w\n", msg, err)
+	}
+
+	return entries, nil
 }
 
 func IntegrationPodPhase(ns string, name string) func() corev1.PodPhase {
@@ -404,7 +588,7 @@ func IntegrationPods(ns string, name string) func() []corev1.Pod {
 				v1.IntegrationLabel: name,
 			})
 		if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return lst.Items
 	}
@@ -420,6 +604,26 @@ func IntegrationSpecReplicas(ns string, name string) func() *int32 {
 	}
 }
 
+func IntegrationGeneration(ns string, name string) func() *int64 {
+	return func() *int64 {
+		it := Integration(ns, name)()
+		if it == nil {
+			return nil
+		}
+		return &it.Generation
+	}
+}
+
+func IntegrationObservedGeneration(ns string, name string) func() *int64 {
+	return func() *int64 {
+		it := Integration(ns, name)()
+		if it == nil {
+			return nil
+		}
+		return &it.Status.ObservedGeneration
+	}
+}
+
 func IntegrationStatusReplicas(ns string, name string) func() *int32 {
 	return func() *int32 {
 		it := Integration(ns, name)()
@@ -430,17 +634,33 @@ func IntegrationStatusReplicas(ns string, name string) func() *int32 {
 	}
 }
 
+func IntegrationStatusImage(ns string, name string) func() string {
+	return func() string {
+		it := Integration(ns, name)()
+		if it == nil {
+			return ""
+		}
+		return it.Status.Image
+	}
+}
+
+func IntegrationAnnotations(ns string, name string) func() map[string]string {
+	return func() map[string]string {
+		it := Integration(ns, name)()
+		if it == nil {
+			return map[string]string{}
+		}
+		return it.Annotations
+	}
+}
+
 func IntegrationCondition(ns string, name string, conditionType v1.IntegrationConditionType) func() *v1.IntegrationCondition {
 	return func() *v1.IntegrationCondition {
 		it := Integration(ns, name)()
 		if it == nil {
 			return nil
 		}
-		c := it.Status.GetCondition(conditionType)
-		if c == nil {
-			return nil
-		}
-		return c
+		return it.Status.GetCondition(conditionType)
 	}
 }
 
@@ -458,6 +678,47 @@ func IntegrationConditionMessage(c *v1.IntegrationCondition) string {
 	return c.Message
 }
 
+func HealthCheckResponse(podRegexp string, healthName string) func(*v1.IntegrationCondition) *v1.HealthCheckResponse {
+	re := regexp.MustCompile(podRegexp)
+
+	return func(c *v1.IntegrationCondition) *v1.HealthCheckResponse {
+		if c == nil {
+			return nil
+		}
+
+		for p := range c.Pods {
+			if re.MatchString(c.Pods[p].Name) {
+				continue
+			}
+
+			for h := range c.Pods[p].Health {
+				if c.Pods[p].Health[h].Name == healthName {
+					return &c.Pods[p].Health[h]
+				}
+			}
+
+		}
+
+		return nil
+	}
+}
+
+func HealthCheckData(r *v1.HealthCheckResponse) (map[string]interface{}, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.Data == nil {
+		return nil, nil
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(r.Data, data); err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
 func IntegrationConditionStatus(ns string, name string, conditionType v1.IntegrationConditionType) func() corev1.ConditionStatus {
 	return func() corev1.ConditionStatus {
 		c := IntegrationCondition(ns, name, conditionType)()
@@ -473,11 +734,13 @@ func AssignIntegrationToOperator(ns, name, operator string) error {
 	if it == nil {
 		return fmt.Errorf("cannot assign integration %q to operator: integration not found", name)
 	}
-	if it.Annotations == nil {
-		it.Annotations = make(map[string]string)
-	}
-	it.Annotations[v1.OperatorIDAnnotation] = operator
+
+	it.SetOperatorID(operator)
 	return TestClient().Update(TestContext, it)
+}
+
+func Annotations(object metav1.Object) map[string]string {
+	return object.GetAnnotations()
 }
 
 func Lease(ns string, name string) func() *coordination.Lease {
@@ -491,7 +754,7 @@ func Lease(ns string, name string) func() *coordination.Lease {
 		if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		} else if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return &lease
 	}
@@ -505,9 +768,8 @@ func Nodes() func() []corev1.Node {
 				APIVersion: corev1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, nodes)
-		if err != nil {
-			panic(err)
+		if err := TestClient().List(TestContext, nodes); err != nil {
+			failTest(err)
 		}
 		return nodes.Items
 	}
@@ -526,7 +788,7 @@ func Node(name string) func() *corev1.Node {
 		}
 		err := TestClient().Get(TestContext, ctrl.ObjectKeyFromObject(node), node)
 		if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return node
 	}
@@ -543,9 +805,45 @@ func Service(ns string, name string) func() *corev1.Service {
 		if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		} else if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return &svc
+	}
+}
+
+func ServiceType(ns string, name string) func() corev1.ServiceType {
+	return func() corev1.ServiceType {
+		svc := Service(ns, name)()
+		if svc == nil {
+			return ""
+		}
+		return svc.Spec.Type
+	}
+}
+
+// Find the service in the given namespace with the given type
+func ServicesByType(ns string, svcType corev1.ServiceType) func() []corev1.Service {
+	return func() []corev1.Service {
+		svcs := []corev1.Service{}
+
+		svcList, err := TestClient().CoreV1().Services(ns).List(TestContext, metav1.ListOptions{})
+		if err != nil && k8serrors.IsNotFound(err) {
+			return svcs
+		} else if err != nil {
+			failTest(err)
+		}
+
+		if len(svcList.Items) == 0 {
+			return svcs
+		}
+
+		for _, svc := range svcList.Items {
+			if svc.Spec.Type == svcType {
+				svcs = append(svcs, svc)
+			}
+		}
+
+		return svcs
 	}
 }
 
@@ -560,7 +858,7 @@ func Route(ns string, name string) func() *routev1.Route {
 		if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		} else if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return &route
 	}
@@ -576,26 +874,43 @@ func RouteStatus(ns string, name string) func() string {
 	}
 }
 
-func IntegrationCronJob(ns string, name string) func() *v1beta1.CronJob {
-	return func() *v1beta1.CronJob {
-		lst := v1beta1.CronJobList{
+func IntegrationCronJob(ns string, name string) func() *batchv1.CronJob {
+	return func() *batchv1.CronJob {
+		lst := batchv1.CronJobList{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "CronJob",
-				APIVersion: v1beta1.SchemeGroupVersion.String(),
+				APIVersion: batchv1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.InNamespace(ns),
 			ctrl.MatchingLabels{
 				"camel.apache.org/integration": name,
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
 		}
 		return &lst.Items[0]
+	}
+}
+
+func Integrations(ns string) func() *v1.IntegrationList {
+	return func() *v1.IntegrationList {
+		lst := v1.NewIntegrationList()
+		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil {
+			failTest(err)
+		}
+
+		return &lst
+	}
+}
+
+func NumIntegrations(ns string) func() int {
+	return func() int {
+		lst := Integrations(ns)()
+		return len(lst.Items)
 	}
 }
 
@@ -607,7 +922,7 @@ func Integration(ns string, name string) func() *v1.Integration {
 			Name:      name,
 		}
 		if err := TestClient().Get(TestContext, key, &it); err != nil && !k8serrors.IsNotFound(err) {
-			panic(err)
+			failTest(err)
 		} else if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -672,7 +987,7 @@ func Kit(ns, name string) func() *v1.IntegrationKit {
 	return func() *v1.IntegrationKit {
 		kit := v1.NewIntegrationKit(ns, name)
 		if err := TestClient().Get(TestContext, ctrl.ObjectKeyFromObject(kit), kit); err != nil && !k8serrors.IsNotFound(err) {
-			panic(err)
+			failTest(err)
 		} else if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -730,11 +1045,21 @@ func KameletBinding(ns string, name string) func() *v1alpha1.KameletBinding {
 			Name:      name,
 		}
 		if err := TestClient().Get(TestContext, key, &klb); err != nil && !k8serrors.IsNotFound(err) {
-			panic(err)
+			failTest(err)
 		} else if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		}
 		return &klb
+	}
+}
+
+func KameletBindingPhase(ns string, name string) func() v1alpha1.KameletBindingPhase {
+	return func() v1alpha1.KameletBindingPhase {
+		klb := KameletBinding(ns, name)()
+		if klb == nil {
+			return ""
+		}
+		return klb.Status.Phase
 	}
 }
 
@@ -770,6 +1095,13 @@ func KameletBindingCondition(ns string, name string, conditionType v1alpha1.Kame
 		}
 		return c
 	}
+}
+
+func KameletBindingConditionStatusExtract(c *v1alpha1.KameletBindingCondition) corev1.ConditionStatus {
+	if c == nil {
+		return ""
+	}
+	return c.Status
 }
 
 func KameletBindingConditionReason(c *v1alpha1.KameletBindingCondition) string {
@@ -828,10 +1160,8 @@ func AssignKameletBindingToOperator(ns, name, operator string) error {
 	if klb == nil {
 		return fmt.Errorf("cannot assign kamelet binding %q to operator: kamelet binding not found", name)
 	}
-	if klb.Annotations == nil {
-		klb.Annotations = make(map[string]string)
-	}
-	klb.Annotations[v1.OperatorIDAnnotation] = operator
+
+	klb.SetOperatorID(operator)
 	return TestClient().Update(TestContext, klb)
 }
 
@@ -879,14 +1209,14 @@ func Kits(ns string, options ...interface{}) func() []v1.IntegrationKit {
 		case ctrl.ListOption:
 			listOptions = append(listOptions, o)
 		default:
-			panic(fmt.Errorf("unsupported kits option %q", o))
+			failTest(fmt.Errorf("unsupported kits option %q", o))
 		}
 	}
 
 	return func() []v1.IntegrationKit {
 		list := v1.NewIntegrationKitList()
 		if err := TestClient().List(TestContext, &list, listOptions...); err != nil {
-			panic(err)
+			failTest(err)
 		}
 
 		var kits []v1.IntegrationKit
@@ -901,6 +1231,35 @@ func Kits(ns string, options ...interface{}) func() []v1.IntegrationKit {
 		}
 
 		return kits
+	}
+}
+
+func DeleteKits(ns string) error {
+	kits := Kits(ns)()
+	if len(kits) == 0 {
+		return nil
+	}
+	for _, kit := range kits {
+		if err := TestClient().Delete(TestContext, &kit); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func DeleteIntegrations(ns string) func() (int, error) {
+	return func() (int, error) {
+		integrations := Integrations(ns)()
+		if len(integrations.Items) == 0 {
+			return 0, nil
+		}
+
+		if err := Kamel("delete", "--all", "-n", ns).Execute(); err != nil {
+			return 0, err
+		}
+
+		return NumIntegrations(ns)(), nil
 	}
 }
 
@@ -923,6 +1282,23 @@ func OperatorPodPhase(ns string) func() corev1.PodPhase {
 			return ""
 		}
 		return pod.Status.Phase
+	}
+}
+
+func OperatorEnvVarValue(ns string, key string) func() string {
+	return func() string {
+		pod := OperatorPod(ns)()
+		if pod == nil || len(pod.Spec.Containers) == 0 {
+			return ""
+		}
+		envvars := pod.Spec.Containers[0].Env
+		for _, v := range envvars {
+			if v.Name == key {
+				return v.Value
+			}
+		}
+
+		return ""
 	}
 }
 
@@ -960,19 +1336,18 @@ func AutogeneratedConfigmapsCount(ns string) func() int {
 				APIVersion: corev1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.InNamespace(ns),
 			ctrl.MatchingLabels{
 				kubernetes.ConfigMapAutogenLabel: "true",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		return len(lst.Items)
 	}
 }
 
-func NewPlainTextConfigmap(ns string, name string, data map[string]string) error {
+func CreatePlainTextConfigmap(ns string, name string, data map[string]string) error {
 	cm := corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ConfigMap",
@@ -987,7 +1362,22 @@ func NewPlainTextConfigmap(ns string, name string, data map[string]string) error
 	return TestClient().Create(TestContext, &cm)
 }
 
-func NewBinaryConfigmap(ns string, name string, data map[string][]byte) error {
+func UpdatePlainTextConfigmap(ns string, name string, data map[string]string) error {
+	cm := corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "ConfigMap",
+			APIVersion: corev1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      name,
+		},
+		Data: data,
+	}
+	return TestClient().Update(TestContext, &cm)
+}
+
+func CreateBinaryConfigmap(ns string, name string, data map[string][]byte) error {
 	cm := corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ConfigMap",
@@ -1002,7 +1392,7 @@ func NewBinaryConfigmap(ns string, name string, data map[string][]byte) error {
 	return TestClient().Create(TestContext, &cm)
 }
 
-func NewPlainTextSecret(ns string, name string, data map[string]string) error {
+func CreatePlainTextSecret(ns string, name string, data map[string]string) error {
 	sec := corev1.Secret{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Secret",
@@ -1015,6 +1405,30 @@ func NewPlainTextSecret(ns string, name string, data map[string]string) error {
 		StringData: data,
 	}
 	return TestClient().Create(TestContext, &sec)
+}
+
+// Finds a secret in the given namespace by name or prefix of name
+func SecretByName(ns string, prefix string) func() *corev1.Secret {
+	return func() *corev1.Secret {
+		secretList, err := TestClient().CoreV1().Secrets(ns).List(TestContext, metav1.ListOptions{})
+		if err != nil && k8serrors.IsNotFound(err) {
+			return nil
+		} else if err != nil {
+			failTest(err)
+		}
+
+		if len(secretList.Items) == 0 {
+			return nil
+		}
+
+		for _, secret := range secretList.Items {
+			if strings.HasPrefix(secret.Name, prefix) {
+				return &secret
+			}
+		}
+
+		return nil
+	}
 }
 
 func KnativeService(ns string, name string) func() *servingv1.Service {
@@ -1111,11 +1525,21 @@ func BuildPhase(ns, name string) func() v1.BuildPhase {
 	}
 }
 
+func HasPlatform(ns string) func() bool {
+	return func() bool {
+		lst := v1.NewIntegrationPlatformList()
+		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil {
+			return false
+		}
+		return len(lst.Items) > 0
+	}
+}
+
 func Platform(ns string) func() *v1.IntegrationPlatform {
 	return func() *v1.IntegrationPlatform {
 		lst := v1.NewIntegrationPlatformList()
 		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil {
-			panic(err)
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
@@ -1128,12 +1552,12 @@ func Platform(ns string) func() *v1.IntegrationPlatform {
 					continue
 				}
 				if pl != nil {
-					panic("multiple primary integration platforms found in namespace " + ns)
+					failTest(fmt.Errorf("multiple primary integration platforms found in namespace %q", ns))
 				}
 				pl = &p
 			}
 			if pl == nil {
-				panic(fmt.Sprintf("multiple integration platforms found in namespace %q but no one is primary", ns))
+				failTest(fmt.Errorf("multiple integration platforms found in namespace %q but no one is primary", ns))
 			}
 			return pl
 		}
@@ -1147,8 +1571,7 @@ func DeletePlatform(ns string) func() bool {
 		if pl == nil {
 			return true
 		}
-		err := TestClient().Delete(TestContext, pl)
-		if err != nil {
+		if err := TestClient().Delete(TestContext, pl); err != nil {
 			log.Error(err, "Got error while deleting the platform")
 		}
 		return false
@@ -1175,6 +1598,32 @@ func PlatformPhase(ns string) func() v1.IntegrationPlatformPhase {
 	}
 }
 
+func PlatformCondition(
+	ns string,
+	conditionType v1.IntegrationPlatformConditionType,
+) func() *v1.IntegrationPlatformCondition {
+	return func() *v1.IntegrationPlatformCondition {
+		p := Platform(ns)()
+		if p == nil {
+			return nil
+		}
+		return p.Status.GetCondition(conditionType)
+	}
+}
+
+func PlatformConditionStatus(
+	ns string,
+	conditionType v1.IntegrationPlatformConditionType,
+) func() corev1.ConditionStatus {
+	return func() corev1.ConditionStatus {
+		c := PlatformCondition(ns, conditionType)()
+		if c == nil {
+			return "Unknown"
+		}
+		return c.Status
+	}
+}
+
 func PlatformProfile(ns string) func() v1.TraitProfile {
 	return func() v1.TraitProfile {
 		p := Platform(ns)()
@@ -1190,22 +1639,18 @@ func AssignPlatformToOperator(ns, operator string) error {
 	if pl == nil {
 		return errors.New("cannot assign platform to operator: no platform found")
 	}
-	if pl.Annotations == nil {
-		pl.Annotations = make(map[string]string)
-	}
-	pl.Annotations[v1.OperatorIDAnnotation] = operator
+
+	pl.SetOperatorID(operator)
 	return TestClient().Update(TestContext, pl)
 }
 
-func ConfigureSecondayPlatfromWith(ns string, customizer func(pl *v1.IntegrationPlatform)) error {
+func ConfigureSecondaryPlatformWith(ns string, customizer func(pl *v1.IntegrationPlatform)) error {
 	pl := Platform(ns)()
 	if pl == nil {
 		return errors.New("cannot find primary platform")
 	}
-	if pl.Annotations == nil {
-		pl.Annotations = make(map[string]string)
-	}
-	pl.Annotations[v1.SecondaryPlatformAnnotation] = "true"
+
+	v1.SetAnnotation(&pl.ObjectMeta, v1.SecondaryPlatformAnnotation, "true")
 	pl.ObjectMeta.ResourceVersion = ""
 	pl.Name = ""
 	pl.Status = v1.IntegrationPlatformStatus{}
@@ -1233,7 +1678,7 @@ func CRDs() func() []metav1.APIResource {
 			if err != nil && k8serrors.IsNotFound(err) {
 				return nil
 			} else if err != nil {
-				panic(err)
+				failTest(err)
 			}
 
 			for _, res := range lst.APIResources {
@@ -1257,7 +1702,7 @@ func ConsoleCLIDownload(name string) func() *consoleV1.ConsoleCLIDownload {
 	return func() *consoleV1.ConsoleCLIDownload {
 		cliDownload := consoleV1.ConsoleCLIDownload{}
 		if err := TestClient().Get(TestContext, ctrl.ObjectKey{Name: name}, &cliDownload); err != nil && !k8serrors.IsNotFound(err) {
-			panic(err)
+			failTest(err)
 		} else if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -1266,6 +1711,15 @@ func ConsoleCLIDownload(name string) func() *consoleV1.ConsoleCLIDownload {
 }
 
 func OperatorPod(ns string) func() *corev1.Pod {
+	namespace := ns
+
+	globalTest := os.Getenv("CAMEL_K_FORCE_GLOBAL_TEST") == "true"
+	opns := os.Getenv("CAMEL_K_GLOBAL_OPERATOR_NS")
+	if globalTest && len(opns) > 0 {
+		// Use the global operator pod instead of given namespace
+		namespace = opns
+	}
+
 	return func() *corev1.Pod {
 		lst := corev1.PodList{
 			TypeMeta: metav1.TypeMeta{
@@ -1273,18 +1727,40 @@ func OperatorPod(ns string) func() *corev1.Pod {
 				APIVersion: v1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
-			ctrl.InNamespace(ns),
+		if err := TestClient().List(TestContext, &lst,
+			ctrl.InNamespace(namespace),
 			ctrl.MatchingLabels{
 				"camel.apache.org/component": "operator",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
 		}
 		return &lst.Items[0]
+	}
+}
+
+// Find one Pod filtered by namespace ns and label app.kubernetes.io/name value appName.
+func Pod(ns string, appName string) func() (*corev1.Pod, error) {
+	return func() (*corev1.Pod, error) {
+		lst := corev1.PodList{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Pod",
+				APIVersion: v1.SchemeGroupVersion.String(),
+			},
+		}
+		if err := TestClient().List(TestContext, &lst,
+			ctrl.InNamespace(ns),
+			ctrl.MatchingLabels{
+				"app.kubernetes.io/name": appName,
+			}); err != nil {
+			return nil, err
+		}
+		if len(lst.Items) == 0 {
+			return nil, nil
+		}
+		return &lst.Items[0], nil
 	}
 }
 
@@ -1323,12 +1799,11 @@ func ClusterRole() func() []rbacv1.ClusterRole {
 				APIVersion: rbacv1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.MatchingLabels{
 				"app": "camel-k",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
@@ -1345,13 +1820,12 @@ func Role(ns string) func() []rbacv1.Role {
 				APIVersion: rbacv1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.InNamespace(ns),
 			ctrl.MatchingLabels{
 				"app": "camel-k",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
@@ -1368,13 +1842,12 @@ func RoleBinding(ns string) func() *rbacv1.RoleBinding {
 				APIVersion: metav1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.InNamespace(ns),
 			ctrl.MatchingLabels{
 				"app": "camel-k",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
@@ -1391,13 +1864,12 @@ func ServiceAccount(ns, name string) func() *corev1.ServiceAccount {
 				APIVersion: corev1.SchemeGroupVersion.String(),
 			},
 		}
-		err := TestClient().List(TestContext, &lst,
+		if err := TestClient().List(TestContext, &lst,
 			ctrl.InNamespace(ns),
 			ctrl.MatchingLabels{
 				"app": "camel-k",
-			})
-		if err != nil {
-			panic(err)
+			}); err != nil {
+			failTest(err)
 		}
 		if len(lst.Items) == 0 {
 			return nil
@@ -1409,9 +1881,8 @@ func ServiceAccount(ns, name string) func() *corev1.ServiceAccount {
 func KameletList(ns string) func() []v1alpha1.Kamelet {
 	return func() []v1alpha1.Kamelet {
 		lst := v1alpha1.NewKameletList()
-		err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns))
-		if err != nil {
-			panic(err)
+		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil {
+			failTest(err)
 		}
 		return lst.Items
 	}
@@ -1425,7 +1896,7 @@ func Kamelet(name string, ns string) func() *v1alpha1.Kamelet {
 			Name:      name,
 		}
 		if err := TestClient().Get(TestContext, key, &it); err != nil && !k8serrors.IsNotFound(err) {
-			panic(err)
+			failTest(err)
 		} else if err != nil && k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -1463,7 +1934,7 @@ func CreateOperatorServiceAccount(ns string) error {
 func CreateOperatorRole(ns string) (err error) {
 	oc, err := openshift.IsOpenShift(TestClient())
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	customizer := install.IdentityResourceCustomizer
 	if oc {
@@ -1484,7 +1955,7 @@ func CreateOperatorRole(ns string) (err error) {
 func CreateOperatorRoleBinding(ns string) error {
 	oc, err := openshift.IsOpenShift(TestClient())
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	err = install.Resource(TestContext, TestClient(), ns, true, install.IdentityResourceCustomizer, "/rbac/operator-role-binding.yaml")
 	if err != nil {
@@ -1545,6 +2016,22 @@ func CreateKnativeChannel(ns string, name string) func() error {
 	}
 }
 
+func CreateKnativeBroker(ns string, name string) func() error {
+	return func() error {
+		broker := eventing.Broker{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Broker",
+				APIVersion: eventing.SchemeGroupVersion.String(),
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: ns,
+				Name:      name,
+			},
+		}
+		return TestClient().Create(TestContext, &broker)
+	}
+}
+
 /*
 	Kamelets
 */
@@ -1594,11 +2081,17 @@ func CreateTimerKamelet(ns string, name string) func() error {
 	return CreateKamelet(ns, name, flow, props, nil)
 }
 
-func BindKameletTo(ns string, name string, annotations map[string]string, from corev1.ObjectReference, to corev1.ObjectReference, sourceProperties map[string]string, sinkProperties map[string]string) func() error {
+// Deprecated:
+// Use KamelBind func instead
+func BindKameletTo(ns, name string, annotations map[string]string, from, to corev1.ObjectReference,
+	sourceProperties, sinkProperties map[string]string) func() error {
 	return BindKameletToWithErrorHandler(ns, name, annotations, from, to, sourceProperties, sinkProperties, nil)
 }
 
-func BindKameletToWithErrorHandler(ns string, name string, annotations map[string]string, from corev1.ObjectReference, to corev1.ObjectReference, sourceProperties map[string]string, sinkProperties map[string]string, errorHandler map[string]interface{}) func() error {
+// Deprecated:
+// Use KamelBind func instead
+func BindKameletToWithErrorHandler(ns, name string, annotations map[string]string, from, to corev1.ObjectReference,
+	sourceProperties, sinkProperties map[string]string, errorHandler map[string]interface{}) func() error {
 	return func() error {
 		kb := v1alpha1.NewKameletBinding(ns, name)
 		kb.Annotations = annotations
@@ -1615,46 +2108,58 @@ func BindKameletToWithErrorHandler(ns string, name string, annotations map[strin
 		if errorHandler != nil {
 			kb.Spec.ErrorHandler = asErrorHandlerSpec(errorHandler)
 		}
-		return kubernetes.ReplaceResource(TestContext, TestClient(), &kb)
+		_, err := kubernetes.ReplaceResource(TestContext, TestClient(), &kb)
+		return err
 	}
 }
 
+// Deprecated:
+// Use KamelBind func instead
 func asTemplate(source map[string]interface{}) *v1alpha1.Template {
 	bytes, err := json.Marshal(source)
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	return &v1alpha1.Template{
 		RawMessage: bytes,
 	}
 }
 
+// Deprecated:
+// Use KamelBind func instead
 func asErrorHandlerSpec(source map[string]interface{}) *v1alpha1.ErrorHandlerSpec {
 	bytes, err := json.Marshal(source)
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	return &v1alpha1.ErrorHandlerSpec{
 		RawMessage: bytes,
 	}
 }
 
+// Deprecated:
+// Use KamelBind func instead
 func asEndpointProperties(props map[string]string) *v1alpha1.EndpointProperties {
+	if props == nil {
+		return &v1alpha1.EndpointProperties{}
+	}
+
 	bytes, err := json.Marshal(props)
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
 	return &v1alpha1.EndpointProperties{
 		RawMessage: bytes,
 	}
 }
 
-func AsTraitConfiguration(props map[string]string) v1.TraitConfiguration {
+// nolint: staticcheck
+func AsTraitConfiguration(props map[string]string) *traitv1.Configuration {
 	bytes, err := json.Marshal(props)
 	if err != nil {
-		panic(err)
+		failTest(err)
 	}
-	return v1.TraitConfiguration{
+	return &traitv1.Configuration{
 		RawMessage: bytes,
 	}
 }
@@ -1663,38 +2168,40 @@ func AsTraitConfiguration(props map[string]string) v1.TraitConfiguration {
 	Namespace testing functions
 */
 
-func NumPods(ns string) func() int {
-	return func() int {
+func Pods(ns string) func() []corev1.Pod {
+	return func() []corev1.Pod {
 		lst := corev1.PodList{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "Pod",
 				APIVersion: v1.SchemeGroupVersion.String(),
 			},
 		}
-		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil && k8serrors.IsUnauthorized(err) {
-			return 0
-		} else if err != nil {
-			log.Error(err, "Error while listing the pods")
-			return 0
+		if err := TestClient().List(TestContext, &lst, ctrl.InNamespace(ns)); err != nil {
+			if !k8serrors.IsUnauthorized(err) {
+				log.Error(err, "Error while listing the pods")
+			}
+			return nil
 		}
-		return len(lst.Items)
+		return lst.Items
 	}
 }
 
 func WithNewTestNamespace(t *testing.T, doRun func(string)) {
-	ns := NewTestNamespace(false)
-	defer DeleteTestNamespace(t, ns)
-	defer UserCleanup()
+	setTestLocus(t)
+	ns := newTestNamespace(false)
+	defer deleteTestNamespace(t, ns)
+	defer userCleanup(t)
 
-	InvokeUserTestCode(t, ns.GetName(), doRun)
+	invokeUserTestCode(t, ns.GetName(), doRun)
 }
 
 func WithGlobalOperatorNamespace(t *testing.T, test func(string)) {
+	setTestLocus(t)
 	ocp, err := openshift.IsOpenShift(TestClient())
 	assert.Nil(t, err)
 	if ocp {
 		// global operators are always installed in the openshift-operators namespace
-		InvokeUserTestCode(t, "openshift-operators", test)
+		invokeUserTestCode(t, "openshift-operators", test)
 	} else {
 		// create new namespace for the global operator
 		WithNewTestNamespace(t, test)
@@ -1702,15 +2209,16 @@ func WithGlobalOperatorNamespace(t *testing.T, test func(string)) {
 }
 
 func WithNewTestNamespaceWithKnativeBroker(t *testing.T, doRun func(string)) {
-	ns := NewTestNamespace(true)
-	defer DeleteTestNamespace(t, ns)
-	defer DeleteKnativeBroker(ns)
-	defer UserCleanup()
+	setTestLocus(t)
+	ns := newTestNamespace(true)
+	defer deleteTestNamespace(t, ns)
+	defer deleteKnativeBroker(ns)
+	defer userCleanup(t)
 
-	InvokeUserTestCode(t, ns.GetName(), doRun)
+	invokeUserTestCode(t, ns.GetName(), doRun)
 }
 
-func UserCleanup() {
+func userCleanup(t *testing.T) {
 	userCmd := os.Getenv("KAMEL_TEST_CLEANUP")
 	if userCmd != "" {
 		fmt.Printf("Executing user cleanup command: %s\n", userCmd)
@@ -1719,27 +2227,40 @@ func UserCleanup() {
 		command.Stderr = os.Stderr
 		command.Stdout = os.Stdout
 		if err := command.Run(); err != nil {
-			fmt.Printf("An error occurred during user cleanup command execution: %v\n", err)
+			t.Logf("An error occurred during user cleanup command execution: %v\n", err)
 		} else {
-			fmt.Printf("User cleanup command completed successfully\n")
+			t.Logf("User cleanup command completed successfully\n")
 		}
 	}
 }
 
-func InvokeUserTestCode(t *testing.T, ns string, doRun func(string)) {
-	defer func() {
+func invokeUserTestCode(t *testing.T, ns string, doRun func(string)) {
+	globalTest := os.Getenv("CAMEL_K_FORCE_GLOBAL_TEST") == "true"
+
+	defer func(isGlobal bool) {
 		if t.Failed() {
 			if err := util.Dump(TestContext, TestClient(), ns, t); err != nil {
 				t.Logf("Error while dumping namespace %s: %v\n", ns, err)
 			}
 		}
-	}()
+
+		// Try to clean up namespace
+		if !isGlobal && HasPlatform(ns)() {
+			t.Logf("Clean up test namespace: %s", ns)
+
+			if err := Kamel("uninstall", "-n", ns, "--skip-crd", "--skip-cluster-roles").Execute(); err != nil {
+				t.Logf("Error while cleaning up namespace %s: %v\n", ns, err)
+			}
+
+			t.Logf("Successfully cleaned up test namespace: %s", ns)
+		}
+	}(globalTest)
 
 	gomega.RegisterTestingT(t)
 	doRun(ns)
 }
 
-func DeleteKnativeBroker(ns metav1.Object) {
+func deleteKnativeBroker(ns metav1.Object) {
 	nsRef := corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: v1.SchemeGroupVersion.String(),
@@ -1751,12 +2272,12 @@ func DeleteKnativeBroker(ns metav1.Object) {
 	}
 	nsKey := ctrl.ObjectKeyFromObject(&nsRef)
 	if err := TestClient().Get(TestContext, nsKey, &nsRef); err != nil {
-		panic(err)
+		failTest(err)
 	}
 
 	nsRef.SetLabels(make(map[string]string, 0))
 	if err := TestClient().Update(TestContext, &nsRef); err != nil {
-		panic(err)
+		failTest(err)
 	}
 	broker := eventing.Broker{
 		TypeMeta: metav1.TypeMeta{
@@ -1769,11 +2290,11 @@ func DeleteKnativeBroker(ns metav1.Object) {
 		},
 	}
 	if err := TestClient().Delete(TestContext, &broker); err != nil {
-		panic(err)
+		failTest(err)
 	}
 }
 
-func DeleteTestNamespace(t *testing.T, ns ctrl.Object) {
+func deleteTestNamespace(t *testing.T, ns ctrl.Object) {
 	value, saveNS := os.LookupEnv("CAMEL_K_TEST_SAVE_FAILED_TEST_NAMESPACE")
 	if t.Failed() && saveNS && value == "true" {
 		t.Logf("Warning: retaining failed test project %q", ns.GetName())
@@ -1783,7 +2304,7 @@ func DeleteTestNamespace(t *testing.T, ns ctrl.Object) {
 	var oc bool
 	var err error
 	if oc, err = openshift.IsOpenShift(TestClient()); err != nil {
-		panic(err)
+		failTest(err)
 	} else if oc {
 		prj := &projectv1.Project{
 			TypeMeta: metav1.TypeMeta{
@@ -1804,29 +2325,57 @@ func DeleteTestNamespace(t *testing.T, ns ctrl.Object) {
 	}
 
 	// Wait for all pods to be deleted
-	pods := NumPods(ns.GetName())()
-	for i := 0; pods > 0 && i < 60; i++ {
+	pods := Pods(ns.GetName())()
+	for i := 0; len(pods) > 0 && i < 60; i++ {
 		time.Sleep(1 * time.Second)
-		pods = NumPods(ns.GetName())()
+		pods = Pods(ns.GetName())()
 	}
-	if pods > 0 {
-		t.Logf("Warning: some pods are still running in namespace %q after deletion (%d)", ns.GetName(), pods)
+	if len(pods) > 0 {
+		names := []string{}
+		for _, pod := range pods {
+			names = append(names, pod.Name)
+		}
+		t.Logf("Warning: some pods are still running in namespace %q after deletion", ns.GetName())
+		t.Logf("Warning: %d running pods: %s", len(pods), names)
 	}
 }
 
-func NewTestNamespace(injectKnativeBroker bool) ctrl.Object {
+func testNamespaceExists(ns string) (bool, error) {
+	_, err := TestClient().CoreV1().Namespaces().Get(TestContext, ns, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false, nil
+		} else {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+func newTestNamespace(injectKnativeBroker bool) ctrl.Object {
 	brokerLabel := "eventing.knative.dev/injection"
-	name := "test-" + uuid.New().String()
+	name := os.Getenv("CAMEL_K_TEST_NS")
+	if name == "" {
+		name = "test-" + uuid.New().String()
+	}
 	c := TestClient()
 
+	if exists, err := testNamespaceExists(name); err != nil {
+		failTest(err)
+	} else if exists {
+		fmt.Println("Warning: namespace ", name, " already exists so using different namespace name")
+		name = fmt.Sprintf("%s-%d", name, time.Now().Second())
+	}
+
 	if oc, err := openshift.IsOpenShift(TestClient()); err != nil {
-		panic(err)
+		failTest(err)
 	} else if oc {
 		rest, err := apiutil.RESTClientForGVK(
 			schema.GroupVersionKind{Group: projectv1.GroupName, Version: projectv1.GroupVersion.Version}, false,
 			c.GetConfig(), serializer.NewCodecFactory(c.GetScheme()))
 		if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		request := &projectv1.ProjectRequest{
 			TypeMeta: metav1.TypeMeta{
@@ -1849,20 +2398,20 @@ func NewTestNamespace(injectKnativeBroker bool) ctrl.Object {
 			Do(TestContext).
 			Into(project)
 		if err != nil {
-			panic(err)
+			failTest(err)
 		}
 		// workaround https://github.com/openshift/origin/issues/3819
 		if injectKnativeBroker {
 			// use Kubernetes API - https://access.redhat.com/solutions/2677921
 			if namespace, err := TestClient().CoreV1().Namespaces().Get(TestContext, name, metav1.GetOptions{}); err != nil {
-				panic(err)
+				failTest(err)
 			} else {
 				if _, ok := namespace.GetLabels()[brokerLabel]; !ok {
 					namespace.SetLabels(map[string]string{
 						brokerLabel: "enabled",
 					})
 					if err = TestClient().Update(TestContext, namespace); err != nil {
-						panic("Unable to label project with knative-eventing-injection. This operation needs update permission on the project.")
+						failTest(errors.New("Unable to label project with knative-eventing-injection. This operation needs update permission on the project."))
 					}
 				}
 			}
@@ -1884,10 +2433,12 @@ func NewTestNamespace(injectKnativeBroker bool) ctrl.Object {
 			})
 		}
 		if err := TestClient().Create(TestContext, namespace); err != nil {
-			panic(err)
+			failTest(err)
 		}
 		return namespace
 	}
+
+	return nil
 }
 
 func GetOutputString(command *cobra.Command) string {
@@ -1909,4 +2460,25 @@ func GetOutputStringAsync(cmd *cobra.Command) func() string {
 	return func() string {
 		return buffer.String()
 	}
+}
+
+func CreateLogKamelet(ns string, name string) func() error {
+	flow := map[string]interface{}{
+		"from": map[string]interface{}{
+			"uri": "kamelet:source",
+			"steps": []map[string]interface{}{
+				{
+					"to": "log:{{loggerName}}",
+				},
+			},
+		},
+	}
+
+	props := map[string]v1alpha1.JSONSchemaProp{
+		"loggerName": {
+			Type: "string",
+		},
+	}
+
+	return CreateKamelet(ns, name, flow, props, nil)
 }

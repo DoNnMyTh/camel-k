@@ -28,17 +28,17 @@ const (
 
 // ErrorHandlerSpec represents an unstructured object for an error handler
 type ErrorHandlerSpec struct {
-	RawMessage `json:",omitempty"`
+	RawMessage `json:",inline,omitempty"`
 }
 
 // ErrorHandlerParameters represent an unstructured object for error handler parameters
 type ErrorHandlerParameters struct {
-	RawMessage `json:",omitempty"`
+	RawMessage `json:",inline,omitempty"`
 }
 
 // BeanProperties represent an unstructured object properties to be set on a bean
 type BeanProperties struct {
-	RawMessage `json:",omitempty"`
+	RawMessage `json:",inline,omitempty"`
 }
 
 // ErrorHandlerType a type of error handler (ie, sink)
@@ -52,7 +52,4 @@ const (
 	ErrorHandlerTypeLog ErrorHandlerType = "log"
 	// ErrorHandlerTypeSink used to send the event to a further sink (for future processing). This was previously known as dead-letter-channel.
 	ErrorHandlerTypeSink ErrorHandlerType = "sink"
-	// ErrorHandlerTypeDeadLetterChannel used to send the event to a dead letter channel
-	// Deprecated in favour of ErrorHandlerTypeSink
-	ErrorHandlerTypeDeadLetterChannel ErrorHandlerType = "dead-letter-channel"
 )

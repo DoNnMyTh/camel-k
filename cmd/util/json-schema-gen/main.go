@@ -35,7 +35,7 @@ import (
 
 func main() {
 	if len(os.Args) != 6 {
-		fmt.Println(`Use "json-schema-gen <crd> <schema> <path> <isArray> <destination>`)
+		fmt.Fprintln(os.Stderr, `Use "json-schema-gen <crd> <schema> <path> <isArray> <destination>`)
 		os.Exit(1)
 	}
 	crd := os.Args[1]
@@ -112,11 +112,17 @@ func rebaseRefs(schema map[string]interface{}) {
 		case k == "$ref" && reflect.TypeOf(v).Kind() == reflect.String:
 			schema[k] = remapRef(fmt.Sprintf("%v", v))
 		case reflect.TypeOf(v).Kind() == reflect.Map:
-			rebaseRefs(v.(map[string]interface{}))
+			if m, ok := v.(map[string]interface{}); ok {
+				rebaseRefs(m)
+			}
 		case reflect.TypeOf(v).Kind() == reflect.Slice:
-			for _, vv := range v.([]interface{}) {
-				if reflect.TypeOf(vv).Kind() == reflect.Map {
-					rebaseRefs(vv.(map[string]interface{}))
+			if vs, ok := v.([]interface{}); ok {
+				for _, vv := range vs {
+					if reflect.TypeOf(vv).Kind() == reflect.Map {
+						if m, ok := vv.(map[string]interface{}); ok {
+							rebaseRefs(m)
+						}
+					}
 				}
 			}
 		}

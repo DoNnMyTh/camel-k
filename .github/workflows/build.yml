@@ -17,6 +17,9 @@
 
 name: build
 
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 on:
   pull_request:
     branches:
@@ -64,6 +67,5 @@ jobs:
       with:
         persist-credentials: false
         submodules: recursive
-
     - name: Execute Build Tests
       uses: ./.github/actions/e2e-build

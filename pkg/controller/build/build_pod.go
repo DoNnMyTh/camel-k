@@ -21,7 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -30,7 +30,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
@@ -231,7 +230,7 @@ func addBuildTaskToPod(build *v1.Build, taskName string, pod *corev1.Pod) {
 			"--task-name",
 			taskName,
 		},
-		WorkingDir: path.Join(builderDir, build.Name),
+		WorkingDir: filepath.Join(builderDir, build.Name),
 		Env:        proxyFromEnvironment(),
 	}
 
@@ -239,16 +238,29 @@ func addBuildTaskToPod(build *v1.Build, taskName string, pod *corev1.Pod) {
 }
 
 func addBuildahTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, task *v1.BuildahTask, pod *corev1.Pod) error {
-	bud := []string{
+	var bud []string
+
+	bud = []string{
 		"buildah",
 		"bud",
 		"--storage-driver=vfs",
+	}
+
+	if task.Platform != "" {
+		bud = append(bud, []string{
+			"--platform",
+			task.Platform,
+		}...)
+	}
+
+	bud = append(bud, []string{
+		"--pull-always",
 		"-f",
 		"Dockerfile",
 		"-t",
 		task.Image,
 		".",
-	}
+	}...)
 
 	push := []string{
 		"buildah",
@@ -312,14 +324,19 @@ func addBuildahTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, ta
 		args = append([]string{auth}, args...)
 	}
 
+	image := task.ExecutorImage
+	if image == "" {
+		image = fmt.Sprintf("%s:v%s", builder.BuildahDefaultImageName, defaults.BuildahVersion)
+	}
+
 	container := corev1.Container{
 		Name:            task.Name,
-		Image:           fmt.Sprintf("quay.io/buildah/stable:v%s", defaults.BuildahVersion),
+		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/bin/sh", "-c"},
 		Args:            []string{strings.Join(args, " && ")},
 		Env:             env,
-		WorkingDir:      path.Join(builderDir, build.Name, builder.ContextDir),
+		WorkingDir:      filepath.Join(builderDir, build.Name, builder.ContextDir),
 		VolumeMounts:    volumeMounts,
 	}
 
@@ -338,7 +355,7 @@ func addKanikoTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, tas
 
 	args := []string{
 		"--dockerfile=Dockerfile",
-		"--context=" + path.Join(builderDir, build.Name, builder.ContextDir),
+		"--context=" + filepath.Join(builderDir, build.Name, builder.ContextDir),
 		"--destination=" + task.Image,
 		"--cache=" + strconv.FormatBool(cache),
 		"--cache-dir=" + builder.KanikoCacheDir,
@@ -424,13 +441,18 @@ func addKanikoTaskToPod(ctx context.Context, c ctrl.Reader, build *v1.Build, tas
 		})
 	}
 
+	image := task.ExecutorImage
+	if image == "" {
+		image = fmt.Sprintf("%s:v%s", builder.KanikoDefaultExecutorImageName, defaults.KanikoVersion)
+	}
+
 	container := corev1.Container{
 		Name:            task.Name,
-		Image:           fmt.Sprintf("gcr.io/kaniko-project/executor:v%s", defaults.KanikoVersion),
+		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Args:            args,
 		Env:             env,
-		WorkingDir:      path.Join(builderDir, build.Name, builder.ContextDir),
+		WorkingDir:      filepath.Join(builderDir, build.Name, builder.ContextDir),
 		VolumeMounts:    volumeMounts,
 	}
 
@@ -447,7 +469,7 @@ func addContainerToPod(build *v1.Build, container corev1.Container, pod *corev1.
 	if hasBuilderVolume(pod) {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      builderVolume,
-			MountPath: path.Join(builderDir, build.Name),
+			MountPath: filepath.Join(builderDir, build.Name),
 		})
 	}
 
@@ -541,7 +563,7 @@ func addRegistrySecret(name string, secret registrySecret, volumes *[]corev1.Vol
 	if secret.refEnv != "" {
 		*env = append(*env, corev1.EnvVar{
 			Name:  secret.refEnv,
-			Value: path.Join(secret.mountPath, secret.destination),
+			Value: filepath.Join(secret.mountPath, secret.destination),
 		})
 	}
 }

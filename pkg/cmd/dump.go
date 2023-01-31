@@ -60,10 +60,10 @@ type dumpCmdOptions struct {
 	Compressed bool `mapstructure:"compressed" yaml:",omitempty"`
 }
 
-func (o *dumpCmdOptions) dump(cmd *cobra.Command, args []string) (err error) {
+func (o *dumpCmdOptions) dump(cmd *cobra.Command, args []string) error {
 	c, err := o.GetCmdClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	if len(args) == 1 {
@@ -75,7 +75,7 @@ func (o *dumpCmdOptions) dump(cmd *cobra.Command, args []string) (err error) {
 			if err != nil {
 				return err
 			}
-			tar.CreateTarFile([]string{file.Name()}, "dump."+file.Name()+"."+time.Now().Format(time.RFC3339)+".tar.gz")
+			tar.CreateTarFile([]string{file.Name()}, "dump."+file.Name()+"."+time.Now().Format(time.RFC3339)+".tar.gz", cmd)
 			return nil
 		})
 	} else {

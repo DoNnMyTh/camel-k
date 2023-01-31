@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/util/camel"
@@ -106,7 +107,6 @@ func createBuilderTestEnv(cluster v1.IntegrationPlatformCluster, strategy v1.Int
 		panic(err)
 	}
 
-	kanikoCache := false
 	res := &Environment{
 		Ctx:          context.TODO(),
 		CamelCatalog: c,
@@ -134,8 +134,10 @@ func createBuilderTestEnv(cluster v1.IntegrationPlatformCluster, strategy v1.Int
 					RuntimeVersion:         defaults.DefaultRuntimeVersion,
 					RuntimeProvider:        v1.RuntimeProviderQuarkus,
 					PublishStrategyOptions: map[string]string{},
-					KanikoBuildCache:       &kanikoCache,
 				},
+			},
+			Status: v1.IntegrationPlatformStatus{
+				Phase: v1.IntegrationPlatformPhaseReady,
 			},
 		},
 		EnvVars:        make([]corev1.EnvVar, 0),
@@ -165,7 +167,7 @@ func TestMavenPropertyBuilderTrait(t *testing.T) {
 
 func createNominalBuilderTraitTest() *builderTrait {
 	builderTrait, _ := newBuilderTrait().(*builderTrait)
-	builderTrait.Enabled = BoolP(true)
+	builderTrait.Enabled = pointer.Bool(true)
 
 	return builderTrait
 }

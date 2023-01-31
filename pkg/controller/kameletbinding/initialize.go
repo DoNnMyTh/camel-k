@@ -52,10 +52,13 @@ func (action *initializeAction) CanHandle(kameletbinding *v1alpha1.KameletBindin
 func (action *initializeAction) Handle(ctx context.Context, kameletbinding *v1alpha1.KameletBinding) (*v1alpha1.KameletBinding, error) {
 	it, err := CreateIntegrationFor(ctx, action.client, kameletbinding)
 	if err != nil {
-		return nil, err
+		kameletbinding.Status.Phase = v1alpha1.KameletBindingPhaseError
+		kameletbinding.Status.SetErrorCondition(v1alpha1.KameletBindingIntegrationConditionError,
+			"Couldn't create an Integration custom resource", err)
+		return kameletbinding, err
 	}
 
-	if err := kubernetes.ReplaceResource(ctx, action.client, it); err != nil {
+	if _, err := kubernetes.ReplaceResource(ctx, action.client, it); err != nil {
 		return nil, errors.Wrap(err, "could not create integration for kamelet binding")
 	}
 

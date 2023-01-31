@@ -18,6 +18,8 @@ limitations under the License.
 package v1
 
 import (
+	"encoding/xml"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -30,13 +32,16 @@ type MavenSpec struct {
 	// A reference to the ConfigMap or Secret key that contains
 	// the Maven settings.
 	Settings ValueSource `json:"settings,omitempty"`
-	// The Secret name and key, containing the CA certificate(s) used to connect
+	// A reference to the ConfigMap or Secret key that contains
+	// the security of the Maven settings.
+	SettingsSecurity ValueSource `json:"settingsSecurity,omitempty"`
+	// The Secrets name and key, containing the CA certificate(s) used to connect
 	// to remote Maven repositories.
 	// It can contain X.509 certificates, and PKCS#7 formatted certificate chains.
 	// A JKS formatted keystore is automatically created to store the CA certificate(s),
 	// and configured to be used as a trusted certificate(s) by the Maven commands.
 	// Note that the root CA certificates are also imported into the created keystore.
-	CASecret *corev1.SecretKeySelector `json:"caSecret,omitempty"`
+	CASecrets []corev1.SecretKeySelector `json:"caSecrets,omitempty"`
 	// The Maven build extensions.
 	// See https://maven.apache.org/guides/mini/guide-using-extensions.html.
 	Extension []MavenArtifact `json:"extension,omitempty"`
@@ -82,3 +87,19 @@ type MavenArtifact struct {
 	// Maven Version
 	Version string `json:"version,omitempty" yaml:"version,omitempty" xml:"version,omitempty"`
 }
+
+type Server struct {
+	XMLName       xml.Name   `xml:"server" json:"-"`
+	ID            string     `xml:"id,omitempty" json:"id,omitempty"`
+	Username      string     `xml:"username,omitempty" json:"username,omitempty"`
+	Password      string     `xml:"password,omitempty" json:"password,omitempty"`
+	Configuration Properties `xml:"configuration,omitempty" json:"configuration,omitempty"`
+}
+
+type StringOrProperties struct {
+	Value      string     `xml:",chardata" json:"-"`
+	Properties Properties `xml:"properties,omitempty" json:"properties,omitempty"`
+}
+
+type Properties map[string]string
+type PluginProperties map[string]StringOrProperties

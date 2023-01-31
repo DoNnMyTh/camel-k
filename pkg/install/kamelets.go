@@ -1,12 +1,12 @@
 /*
 Licensed to the Apache Software Foundation (ASF) under one or more
-contributor license agreements. See the NOTICE file distributed with
+contributor license agreements.  See the NOTICE file distributed with
 this work for additional information regarding copyright ownership.
 The ASF licenses this file to You under the Apache License, Version 2.0
 (the "License"); you may not use this file except in compliance with
-the License. You may obtain a copy of the License at
+the License.  You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+   http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,14 +25,13 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	gerrors "github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
-
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -90,7 +89,7 @@ func KameletCatalog(ctx context.Context, c client.Client, namespace string) erro
 		}
 		// We may want to throttle the creation of Go routines if the number of bundled Kamelets increases.
 		g.Go(func() error {
-			kamelet, err := loadKamelet(path.Join(kameletDir, f.Name()), namespace)
+			kamelet, err := loadKamelet(filepath.Join(kameletDir, f.Name()), namespace)
 			if err != nil {
 				return err
 			}
@@ -103,7 +102,9 @@ func KameletCatalog(ctx context.Context, c client.Client, namespace string) erro
 						hasServerSideApply.Store(false)
 						err = nil
 					} else {
-						tryServerSideApply = sync.Once{}
+						// Unexpected error occurred
+						err = gerrors.Wrap(err, "Unexpected error occurred whilst validating kamelet")
+						log.Error(err, "Error occurred whilst loading kamelets")
 					}
 				} else {
 					hasServerSideApply.Store(true)
@@ -112,7 +113,8 @@ func KameletCatalog(ctx context.Context, c client.Client, namespace string) erro
 			if err != nil {
 				return err
 			}
-			if v := hasServerSideApply.Load(); v.(bool) {
+			v := hasServerSideApply.Load()
+			if vb, ok := v.(bool); ok && vb {
 				if !once {
 					return serverSideApply(gCtx, c, kamelet)
 				}
@@ -184,16 +186,21 @@ func loadKamelet(path string, namespace string) (ctrl.Object, error) {
 
 	kamelet.SetNamespace(namespace)
 
-	if kamelet.GetAnnotations() == nil {
-		kamelet.SetAnnotations(make(map[string]string))
+	annotations := kamelet.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
 	}
-	kamelet.GetAnnotations()[kamelVersionAnnotation] = defaults.Version
+	annotations[kamelVersionAnnotation] = defaults.Version
+	kamelet.SetAnnotations(annotations)
 
-	if kamelet.GetLabels() == nil {
-		kamelet.SetLabels(make(map[string]string))
+	labels := kamelet.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
 	}
-	kamelet.GetLabels()[v1alpha1.KameletBundledLabel] = "true"
-	kamelet.GetLabels()[v1alpha1.KameletReadOnlyLabel] = "true"
+	labels[v1alpha1.KameletBundledLabel] = "true"
+	labels[v1alpha1.KameletReadOnlyLabel] = "true"
+
+	kamelet.SetLabels(labels)
 
 	return kamelet, nil
 }

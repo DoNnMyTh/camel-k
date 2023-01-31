@@ -46,6 +46,8 @@ func newCmdLog(rootCmdOptions *RootCmdOptions) (*cobra.Command, *logCmdOptions) 
 		RunE:    options.run,
 	}
 
+	cmd.Flags().Int64("tail", -1, "The number of lines from the end of the logs to show. Defaults to -1 to show all the lines.")
+
 	// completion support
 	configureKnownCompletions(&cmd)
 
@@ -54,6 +56,7 @@ func newCmdLog(rootCmdOptions *RootCmdOptions) (*cobra.Command, *logCmdOptions) 
 
 type logCmdOptions struct {
 	*RootCmdOptions
+	Tail int64 `mapstructure:"tail"`
 }
 
 func (o *logCmdOptions) validate(_ *cobra.Command, args []string) error {
@@ -92,13 +95,13 @@ func (o *logCmdOptions) run(cmd *cobra.Command, args []string) error {
 	currLogMsg := ""
 	newLogMsg := ""
 
-	err = wait.PollImmediate(pollInterval, pollTimeout, func() (done bool, err error) {
+	err = wait.PollImmediate(pollInterval, pollTimeout, func() (bool, error) {
 		//
 		// Reduce repetition of messages by tracking the last message
 		// and checking if its different from the new message
 		//
 		if newLogMsg != currLogMsg {
-			fmt.Println(newLogMsg)
+			fmt.Fprintln(cmd.OutOrStdout(), newLogMsg)
 			currLogMsg = newLogMsg
 		}
 
@@ -128,8 +131,12 @@ func (o *logCmdOptions) run(cmd *cobra.Command, args []string) error {
 			//
 			// Found the running integration so step over to scraping its pod log
 			//
-			fmt.Printf("Integration '%s' is now running. Showing log ...\n", integrationID)
-			if err := k8slog.Print(o.Context, c, &integration, cmd.OutOrStdout()); err != nil {
+			fmt.Fprintln(cmd.OutOrStdout(), "Integration '"+integrationID+"' is now running. Showing log ...")
+			var tailLines *int64
+			if o.Tail > 0 {
+				tailLines = &o.Tail
+			}
+			if err := k8slog.Print(o.Context, cmd, c, &integration, tailLines, cmd.OutOrStdout()); err != nil {
 				return false, err
 			}
 

@@ -19,7 +19,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.4.1
+    controller-gen.kubebuilder.io/version: v0.6.1
   creationTimestamp: null
   labels:
     app: camel-k
@@ -63,9 +63,6 @@ spec:
           spec:
             description: the desired specification
             properties:
-              authorization:
-                description: 'Deprecated: unused'
-                type: object
               definition:
                 description: defines the formal configuration of the Kamelet
                 properties:
@@ -213,11 +210,6 @@ spec:
                 items:
                   type: string
                 type: array
-              flow:
-                description: 'Deprecated: use Template instead the main source in
-                  YAML DSL'
-                type: object
-                x-kubernetes-preserve-unknown-fields: true
               sources:
                 description: sources in any Camel DSL supported
                 items:
@@ -476,6 +468,11 @@ spec:
                   - type
                   type: object
                 type: array
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  for this Kamelet.
+                format: int64
+                type: integer
               phase:
                 description: Phase --
                 type: string

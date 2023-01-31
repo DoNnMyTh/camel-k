@@ -36,19 +36,14 @@ func newKitDeleteCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, *kitDelete
 	}
 
 	cmd := cobra.Command{
-		Use:     "delete <name>",
-		Short:   "Delete an Integration Kit",
-		Long:    `Delete an Integration Kit.`,
+		Use:     "delete [integration kit1] [integration kit2] ...",
+		Short:   "Delete integration kits deployed on Kubernetes",
 		PreRunE: decode(&options),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(args); err != nil {
 				return err
 			}
-			if err := options.run(args); err != nil {
-				fmt.Println(err.Error())
-			}
-
-			return nil
+			return options.run(cmd, args)
 		},
 	}
 
@@ -64,16 +59,16 @@ type kitDeleteCommandOptions struct {
 
 func (command *kitDeleteCommandOptions) validate(args []string) error {
 	if command.All && len(args) > 0 {
-		return errors.New("invalid combination: both all flag and named Kits are set")
+		return errors.New("invalid combination: --all flag is set and at least one integration kit name is provided")
 	}
 	if !command.All && len(args) == 0 {
-		return errors.New("invalid combination: neither all flag nor named Kits are set")
+		return errors.New("invalid combination: provide one or several integration kit names or set --all flag for all integration kits")
 	}
 
 	return nil
 }
 
-func (command *kitDeleteCommandOptions) run(args []string) error {
+func (command *kitDeleteCommandOptions) run(cmd *cobra.Command, args []string) error {
 	names := args
 
 	c, err := command.GetCmdClient()
@@ -97,7 +92,7 @@ func (command *kitDeleteCommandOptions) run(args []string) error {
 	}
 
 	for _, name := range names {
-		if err := command.delete(name); err != nil {
+		if err := command.delete(cmd, name); err != nil {
 			return err
 		}
 	}
@@ -105,7 +100,7 @@ func (command *kitDeleteCommandOptions) run(args []string) error {
 	return nil
 }
 
-func (command *kitDeleteCommandOptions) delete(name string) error {
+func (command *kitDeleteCommandOptions) delete(cmd *cobra.Command, name string) error {
 	kit := v1.NewIntegrationKit(command.Namespace, name)
 	c, err := command.GetCmdClient()
 	if err != nil {
@@ -144,7 +139,7 @@ func (command *kitDeleteCommandOptions) delete(name string) error {
 		return fmt.Errorf("no integration kit found with name \"%s\"", kit.Name)
 	}
 
-	fmt.Printf("integration kit \"%s\" has been deleted\n", kit.Name)
+	fmt.Fprintln(cmd.OutOrStdout(), `integration kit "`+kit.Name+`" has been deleted`)
 
 	return err
 }

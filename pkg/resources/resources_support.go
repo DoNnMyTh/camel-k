@@ -20,7 +20,9 @@ package resources
 import (
 	"bytes"
 	"io/ioutil"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -42,11 +44,12 @@ func ResourceAsString(name string) (string, error) {
 // Resource provides an easy way to access to embedded assets.
 func Resource(name string) ([]byte, error) {
 	name = strings.Trim(name, " ")
+	name = filepath.ToSlash(name)
 	if !strings.HasPrefix(name, "/") {
 		name = "/" + name
 	}
 
-	file, err := assets.Open(name)
+	file, err := openAsset(name)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot access resource file %s", name)
 	}
@@ -85,7 +88,7 @@ func TemplateResource(name string, params interface{}) (string, error) {
 
 // DirExists tells if a directory exists and can be listed for files.
 func DirExists(dirName string) bool {
-	if _, err := assets.Open(dirName); err != nil {
+	if _, err := openAsset(dirName); err != nil {
 		return false
 	}
 	return true
@@ -103,8 +106,9 @@ func WithPrefix(pathPrefix string) ([]string, error) {
 
 	var res []string
 	for i := range paths {
-		if result, _ := filepath.Match(pathPrefix+"*", paths[i]); result {
-			res = append(res, paths[i])
+		path := filepath.ToSlash(paths[i])
+		if result, _ := filepath.Match(pathPrefix+"*", path); result {
+			res = append(res, path)
 		}
 	}
 
@@ -113,7 +117,8 @@ func WithPrefix(pathPrefix string) ([]string, error) {
 
 // Resources lists all file names in the given path (starts with '/').
 func Resources(dirName string) ([]string, error) {
-	dir, err := assets.Open(dirName)
+	dirName = filepath.ToSlash(dirName)
+	dir, err := openAsset(dirName)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -140,9 +145,13 @@ func Resources(dirName string) ([]string, error) {
 	var res []string
 	for _, f := range files {
 		if !f.IsDir() {
-			res = append(res, filepath.Join(dirName, f.Name()))
+			res = append(res, path.Join(dirName, f.Name()))
 		}
 	}
 
 	return res, dir.Close()
+}
+
+func openAsset(path string) (http.File, error) {
+	return assets.Open(filepath.ToSlash(path))
 }

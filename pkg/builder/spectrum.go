@@ -23,8 +23,8 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"go.uber.org/multierr"
@@ -66,7 +66,7 @@ func (t *spectrumTask) Do(ctx context.Context) v1.BuildStatus {
 		if err != nil {
 			return status.Failed(err)
 		}
-		contextDir = path.Join(pwd, ContextDir)
+		contextDir = filepath.Join(pwd, ContextDir)
 	}
 
 	exists, err := util.DirectoryExists(contextDir)
@@ -126,8 +126,12 @@ func (t *spectrumTask) Do(ctx context.Context) v1.BuildStatus {
 		Recursive:     true,
 	}
 
+	if jobs := runtime.GOMAXPROCS(0); jobs > 1 {
+		options.Jobs = jobs
+	}
+
 	go readSpectrumLogs(newStdR)
-	digest, err := spectrum.Build(options, contextDir+":"+path.Join(DeploymentDir))
+	digest, err := spectrum.Build(options, contextDir+":"+filepath.Join(DeploymentDir)) //nolint
 	if err != nil {
 		_ = os.RemoveAll(registryConfigDir)
 		return status.Failed(err)

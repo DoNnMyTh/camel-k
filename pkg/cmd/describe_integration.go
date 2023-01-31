@@ -47,7 +47,7 @@ func newDescribeIntegrationCmd(rootCmdOptions *RootCmdOptions) (*cobra.Command, 
 				return err
 			}
 			if err := options.run(cmd, args); err != nil {
-				fmt.Println(err.Error())
+				fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
 			}
 
 			return nil
@@ -85,9 +85,9 @@ func (command *describeIntegrationCommandOptions) run(cmd *cobra.Command, args [
 
 	if err := c.Get(command.Context, key, &ctx); err == nil {
 		if desc, err := command.describeIntegration(cmd, ctx); err == nil {
-			fmt.Print(desc)
+			fmt.Fprint(cmd.OutOrStdout(), desc)
 		} else {
-			fmt.Println(err)
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
 		}
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Integration '%s' does not exist.\n", args[0])
@@ -132,16 +132,6 @@ func (command *describeIntegrationCommandOptions) describeIntegration(cmd *cobra
 			w.Writef(0, "Repositories:\n")
 			for _, repository := range i.Spec.Repositories {
 				w.Writef(1, "%s\n", repository)
-			}
-		}
-
-		if len(i.Spec.Resources) > 0 {
-			w.Writef(0, "Resources:\n")
-			for _, resource := range i.Spec.Resources {
-				w.Writef(1, "Content:\n")
-				w.Writef(2, "%s\n", strings.TrimSpace(resource.Content))
-				w.Writef(1, "Name:\t%s\n", resource.Name)
-				w.Writef(1, "Type:\t%s\n", resource.Type)
 			}
 		}
 

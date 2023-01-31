@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +34,7 @@ import (
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/builder"
 	"github.com/apache/camel-k/pkg/event"
+	"github.com/apache/camel-k/pkg/util/kubernetes"
 	"github.com/apache/camel-k/pkg/util/patch"
 )
 
@@ -76,8 +77,7 @@ func (action *monitorRoutineAction) Handle(ctx context.Context, build *v1.Build)
 		// Start the build asynchronously to avoid blocking the reconciliation loop
 		routines.Store(build.Name, true)
 
-		// nolint: contextcheck
-		go action.runBuild(build)
+		go action.runBuild(ctx, build)
 
 	case v1.BuildPhaseRunning:
 		if _, ok := routines.Load(build.Name); !ok {
@@ -92,10 +92,9 @@ func (action *monitorRoutineAction) Handle(ctx context.Context, build *v1.Build)
 	return nil, nil
 }
 
-func (action *monitorRoutineAction) runBuild(build *v1.Build) {
+func (action *monitorRoutineAction) runBuild(ctx context.Context, build *v1.Build) {
 	defer routines.Delete(build.Name)
 
-	ctx := context.Background()
 	ctxWithTimeout, cancel := context.WithDeadline(ctx, build.Status.StartedAt.Add(build.Spec.Timeout.Duration))
 	defer cancel()
 
@@ -138,13 +137,13 @@ tasks:
 					status.Failed(fmt.Errorf("cannot determine context directory for task %s", t.Name))
 					break tasks
 				}
-				t.ContextDir = path.Join(buildDir, builder.ContextDir)
+				t.ContextDir = filepath.Join(buildDir, builder.ContextDir)
 			} else if t := task.S2i; t != nil && t.ContextDir == "" {
 				if buildDir == "" {
 					status.Failed(fmt.Errorf("cannot determine context directory for task %s", t.Name))
 					break tasks
 				}
-				t.ContextDir = path.Join(buildDir, builder.ContextDir)
+				t.ContextDir = filepath.Join(buildDir, builder.ContextDir)
 			}
 
 			// Execute the task
@@ -174,8 +173,10 @@ tasks:
 
 	duration := metav1.Now().Sub(build.Status.StartedAt.Time)
 	status.Duration = duration.String()
+
+	buildCreator := kubernetes.GetCamelCreator(build)
 	// Account for the Build metrics
-	observeBuildResult(build, status.Phase, duration)
+	observeBuildResult(build, status.Phase, buildCreator, duration)
 
 	_ = action.updateBuildStatus(ctx, build, status)
 }

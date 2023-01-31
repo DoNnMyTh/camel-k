@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM quay.io/quarkus/ubi-quarkus-mandrel:21.3.0.0-Final-java11
+FROM quay.io/quarkus/ubi-quarkus-mandrel:22.2.0.0-Final-java11
 
-ARG MAVEN_VERSION="3.8.4"
+ARG MAVEN_VERSION="3.8.6"
 ARG MAVEN_HOME="/usr/share/maven"
-ARG SHA="a9b2d825eacf2e771ed5d6b0e01398589ac1bfa4171f36154d1b5787879605507802f699da6f7cfc80732a5282fd31b28e4cd6052338cbef0fa1358b48a5e3c8"
+ARG SHA="f790857f3b1f90ae8d16281f902c689e4f136ebe584aba45e4b1fa66c80cba826d3e0e52fdd04ed44b4c66f6d3fe3584a057c26dfcac544a60b301e6d0f91c26"
 ARG BASE_URL="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
 
 USER 0
@@ -33,7 +33,7 @@ RUN mkdir -p ${MAVEN_HOME} \
 ADD build/_maven_output /tmp/artifacts/m2
 ADD build/_kamelets /kamelets
 COPY build/_maven_overlay/ /usr/share/maven/lib/
-ADD build/logback.xml /usr/share/maven/conf/
+ADD build/_maven_overlay/logback.xml /usr/share/maven/conf/
 
 ENV MAVEN_OPTS="${MAVEN_OPTS} -Dlogback.configurationFile=/usr/share/maven/conf/logback.xml"
 

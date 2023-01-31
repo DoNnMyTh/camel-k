@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,10 +32,12 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/pointer"
 
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
+	traitv1 "github.com/apache/camel-k/pkg/apis/camel/v1/trait"
 	"github.com/apache/camel-k/pkg/util"
 	"github.com/apache/camel-k/pkg/util/defaults"
 	"github.com/apache/camel-k/pkg/util/digest"
@@ -46,13 +47,9 @@ import (
 	"github.com/apache/camel-k/pkg/util/maven"
 )
 
-// The OpenAPI DSL trait is internally used to allow creating integrations from a OpenAPI specs.
-//
-// +camel-k:trait=openapi.
 type openAPITrait struct {
-	BaseTrait `property:",squash"`
-	// The configmaps holding the spec of the OpenAPI
-	Configmaps []string `property:"configmaps" json:"configmaps,omitempty"`
+	BaseTrait
+	traitv1.OpenAPITrait `property:",squash"`
 }
 
 func newOpenAPITrait() Trait {
@@ -67,23 +64,13 @@ func (t *openAPITrait) IsPlatformTrait() bool {
 }
 
 func (t *openAPITrait) Configure(e *Environment) (bool, error) {
-	if IsFalse(t.Enabled) {
-		return false, nil
-	}
-
-	if e.Integration == nil {
+	if !e.IntegrationInPhase(v1.IntegrationPhaseInitialization) || !pointer.BoolDeref(t.Enabled, true) {
 		return false, nil
 	}
 
 	// check if the runtime provides 'rest' capabilities
 	if _, ok := e.CamelCatalog.Runtime.Capabilities[v1.CapabilityRest]; !ok {
 		return false, fmt.Errorf("the runtime provider %s does not declare 'rest' capability", e.CamelCatalog.Runtime.Provider)
-	}
-
-	for _, resource := range e.Integration.Spec.Resources {
-		if resource.Type == v1.ResourceTypeOpenAPI {
-			return e.IntegrationInPhase(v1.IntegrationPhaseInitialization), nil
-		}
 	}
 
 	if t.Configmaps != nil {
@@ -103,35 +90,13 @@ func (t *openAPITrait) Apply(e *Environment) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	generatedFromResources, err := t.generateFromResources(e, tmpDir)
-	if err != nil {
-		return err
-	}
 	generatedFromConfigmaps, err := t.generateFromConfigmaps(e, tmpDir)
 	if err != nil {
 		return err
 	}
-	if len(generatedFromConfigmaps) > 0 {
-		generatedFromResources = append(generatedFromResources, generatedFromConfigmaps...)
-	}
-	e.Integration.Status.GeneratedSources = generatedFromResources
+	e.Integration.Status.GeneratedSources = generatedFromConfigmaps
 
 	return nil
-}
-
-func (t *openAPITrait) generateFromResources(e *Environment, tmpDir string) ([]v1.SourceSpec, error) {
-	dataSpecs := make([]v1.DataSpec, 0, len(e.Integration.Spec.Resources))
-	for _, resource := range e.Integration.Spec.Resources {
-		if resource.Type != v1.ResourceTypeOpenAPI {
-			continue
-		}
-		if resource.Name == "" {
-			return nil, fmt.Errorf("no name defined for the openapi resource: %v", resource)
-		}
-		dataSpecs = append(dataSpecs, resource.DataSpec)
-	}
-
-	return t.generateFromDataSpecs(e, tmpDir, dataSpecs)
 }
 
 func (t *openAPITrait) generateFromConfigmaps(e *Environment, tmpDir string) ([]v1.SourceSpec, error) {
@@ -145,12 +110,16 @@ func (t *openAPITrait) generateFromConfigmaps(e *Environment, tmpDir string) ([]
 			e.Resources.Add(refCm)
 		}
 		// Iterate over each configmap key which may hold a different OpenAPI spec
-		for k, v := range cm.UnstructuredContent()["data"].(map[string]interface{}) {
-			dataSpecs = append(dataSpecs, v1.DataSpec{
-				Name:        k,
-				Content:     v.(string),
-				Compression: false,
-			})
+		if dataMap, ok := cm.UnstructuredContent()["data"].(map[string]interface{}); ok {
+			for k, v := range dataMap {
+				if content, ok := v.(string); ok {
+					dataSpecs = append(dataSpecs, v1.DataSpec{
+						Name:        k,
+						Content:     content,
+						Compression: false,
+					})
+				}
+			}
 		}
 	}
 
@@ -224,7 +193,7 @@ func (t *openAPITrait) generateOpenAPIConfigMap(e *Environment, resource v1.Data
 }
 
 func (t *openAPITrait) createNewOpenAPIConfigMap(e *Environment, resource v1.DataSpec, tmpDir, generatedContentName string) error {
-	tmpDir = path.Join(tmpDir, generatedContentName)
+	tmpDir = filepath.Join(tmpDir, generatedContentName)
 	err := os.MkdirAll(tmpDir, os.ModePerm)
 	if err != nil {
 		return err
@@ -238,8 +207,8 @@ func (t *openAPITrait) createNewOpenAPIConfigMap(e *Environment, resource v1.Dat
 		}
 	}
 
-	in := path.Join(tmpDir, resource.Name)
-	out := path.Join(tmpDir, "openapi-dsl.xml")
+	in := filepath.Join(tmpDir, resource.Name)
+	out := filepath.Join(tmpDir, "openapi-dsl.xml")
 
 	err = ioutil.WriteFile(in, content, 0o400)
 	if err != nil {
@@ -272,15 +241,16 @@ func (t *openAPITrait) createNewOpenAPIConfigMap(e *Environment, resource v1.Dat
 		return err
 	}
 	mc.GlobalSettings = data
+	secrets := e.Platform.Status.Build.Maven.CASecrets
 
-	if e.Platform.Status.Build.Maven.CASecret != nil {
-		certData, err := kubernetes.GetSecretRefData(e.Ctx, e.Client, e.Platform.Namespace, e.Platform.Status.Build.Maven.CASecret)
+	if secrets != nil {
+		certsData, err := kubernetes.GetSecretsRefData(e.Ctx, e.Client, e.Platform.Namespace, secrets)
 		if err != nil {
 			return err
 		}
 		trustStoreName := "trust.jks"
 		trustStorePass := jvm.NewKeystorePassword()
-		err = jvm.GenerateKeystore(e.Ctx, tmpDir, trustStoreName, trustStorePass, certData)
+		err = jvm.GenerateKeystore(e.Ctx, tmpDir, trustStoreName, trustStorePass, certsData)
 		if err != nil {
 			return err
 		}

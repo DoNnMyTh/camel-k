@@ -40,8 +40,9 @@ func NewProjectWithGAV(group string, artifact string, version string) Project {
 	p.GroupID = group
 	p.ArtifactID = artifact
 	p.Version = version
-	p.Properties = make(map[string]string)
-	p.Properties["project.build.sourceEncoding"] = "UTF-8"
+	p.Properties = v1.Properties{
+		"project.build.sourceEncoding": "UTF-8",
+	}
 
 	return p
 }
@@ -151,36 +152,6 @@ func (p *Project) AddEncodedDependencyExclusion(gav string, exclusion Exclusion)
 	}
 }
 
-type propertiesEntry struct {
-	XMLName xml.Name
-	Value   string `xml:",chardata"`
-}
-
-func (m Properties) AddAll(properties map[string]string) {
-	for k, v := range properties {
-		m[k] = v
-	}
-}
-
-func (m Properties) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
-	if len(m) == 0 {
-		return nil
-	}
-
-	err := e.EncodeToken(start)
-	if err != nil {
-		return err
-	}
-
-	for k, v := range m {
-		if err := e.Encode(propertiesEntry{XMLName: xml.Name{Local: k}, Value: v}); err != nil {
-			return err
-		}
-	}
-
-	return e.EncodeToken(start.End())
-}
-
 // NewDependency creates an new dependency from the given GAV.
 func NewDependency(groupID string, artifactID string, version string) Dependency {
 	return Dependency{
@@ -197,7 +168,7 @@ func NewDependency(groupID string, artifactID string, version string) Dependency
 // The repository can be customized by appending @param to the repository
 // URL, e.g.:
 //
-//     http://my-nexus:8081/repository/publicc@id=my-repo@snapshots
+//	http://my-nexus:8081/repository/publicc@id=my-repo@snapshots
 //
 // That enables snapshots and sets the repository id to `my-repo`.
 func NewRepository(repo string) v1.Repository {

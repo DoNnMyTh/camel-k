@@ -36,10 +36,11 @@ func newCmdInit(rootCmdOptions *RootCmdOptions) (*cobra.Command, *initCmdOptions
 		RootCmdOptions: rootCmdOptions,
 	}
 	cmd := cobra.Command{
-		Use:     "init [flags] IntegrationFile.java",
-		Short:   "Initialize empty Camel K files",
-		Long:    `Initialize empty Camel K integrations and other resources.`,
-		PreRunE: decode(&options),
+		Use:        "init [flags] IntegrationFile.java",
+		Short:      "Initialize empty Camel K files",
+		Long:       `Initialize empty Camel K integrations and other resources.`,
+		Deprecated: "consider using Camel JBang instead (https://camel.apache.org/manual/camel-jbang.html)",
+		PreRunE:    decode(&options),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := options.validate(cmd, args); err != nil {
 				return err
@@ -66,8 +67,7 @@ func (o *initCmdOptions) validate(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("init expects exactly 1 argument, received %d", len(args))
 	}
 
-	fileName := args[0]
-	if o.extractLanguage(fileName) == nil {
+	if fileName := args[0]; o.extractLanguage(fileName) == nil {
 		return fmt.Errorf("unsupported file type: %s", fileName)
 	}
 

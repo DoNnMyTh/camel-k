@@ -22,15 +22,19 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/Masterminds/semver"
 	"github.com/fatih/camelcase"
 	"github.com/spf13/cobra"
 
-	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
-
-	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 	"github.com/apache/camel-k/pkg/client"
+	platformutil "github.com/apache/camel-k/pkg/platform"
 	"github.com/apache/camel-k/pkg/util/defaults"
+	"github.com/apache/camel-k/pkg/util/log"
 )
 
 // VersionVariant may be overridden at build time.
@@ -130,19 +134,24 @@ func (o *versionCmdOptions) displayOperatorVersion(cmd *cobra.Command, c client.
 func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[string]string, error) {
 	infos := make(map[string]string)
 
-	platform := v1.NewIntegrationPlatform(namespace, "camel-k")
-	platformKey := k8sclient.ObjectKey{
-		Namespace: namespace,
-		Name:      "camel-k",
-	}
-
-	if err := c.Get(ctx, platformKey, &platform); err != nil {
+	platform, err := platformutil.GetOrFindLocal(ctx, c, namespace)
+	if err != nil && k8serrors.IsNotFound(err) {
+		// find default operator platform in any namespace
+		if defaultPlatform, _ := platformutil.LookupForPlatformName(ctx, c, platformutil.DefaultPlatformName); defaultPlatform != nil {
+			platform = defaultPlatform
+		} else {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
 	}
+
 	// Useful information
+	infos["name"] = platform.Name
 	infos["version"] = platform.Status.Version
 	infos["publishStrategy"] = string(platform.Status.Build.PublishStrategy)
 	infos["runtimeVersion"] = platform.Status.Build.RuntimeVersion
+	infos["registryAddress"] = platform.Status.Build.Registry.Address
 
 	if platform.Status.Info != nil {
 		for k, v := range platform.Status.Info {
@@ -150,13 +159,15 @@ func operatorInfo(ctx context.Context, c client.Client, namespace string) (map[s
 		}
 	}
 
-	return fromCamelCase(infos), nil
+	ccInfo := fromCamelCase(infos)
+	log.Debugf("Operator Info for namespace %s: %v", namespace, ccInfo)
+	return ccInfo, nil
 }
 
 func fromCamelCase(infos map[string]string) map[string]string {
 	textKeys := make(map[string]string)
 	for k, v := range infos {
-		key := strings.Title(strings.Join(camelcase.Split(k), " "))
+		key := cases.Title(language.English).String(strings.Join(camelcase.Split(k), " "))
 		textKeys[key] = v
 	}
 
@@ -171,15 +182,15 @@ func operatorVersion(ctx context.Context, c client.Client, namespace string) (st
 	return infos[infoVersion], nil
 }
 
-func compatibleVersions(aVersion, bVersion string) bool {
+func compatibleVersions(aVersion, bVersion string, cmd *cobra.Command) bool {
 	a, err := semver.NewVersion(aVersion)
 	if err != nil {
-		fmt.Printf("Could not parse %s (error: %s)\n", a, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Could not parse '"+aVersion+"' (error:", err.Error()+")")
 		return false
 	}
 	b, err := semver.NewVersion(bVersion)
 	if err != nil {
-		fmt.Printf("Could not parse %s (error: %s)\n", b, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Could not parse '"+bVersion+"' (error:", err.Error()+")")
 		return false
 	}
 	// We consider compatible when major and minor are equals

@@ -19,7 +19,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.4.1
+    controller-gen.kubebuilder.io/version: v0.6.1
   creationTimestamp: null
   labels:
     app: camel-k
@@ -101,11 +101,17 @@ spec:
                         contextDir:
                           description: can be useful to share info with other tasks
                           type: string
+                        executorImage:
+                          description: docker image to use
+                          type: string
                         image:
                           description: final image name
                           type: string
                         name:
                           description: name of the task
+                          type: string
+                        platform:
+                          description: The platform of build image
                           type: string
                         registry:
                           description: where to publish the final image
@@ -150,8 +156,8 @@ spec:
                           description: the configuration required by Maven for the
                             application build phase
                           properties:
-                            caSecret:
-                              description: The Secret name and key, containing the
+                            caSecrets:
+                              description: The Secrets name and key, containing the
                                 CA certificate(s) used to connect to remote Maven
                                 repositories. It can contain X.509 certificates, and
                                 PKCS#7 formatted certificate chains. A JKS formatted
@@ -160,23 +166,28 @@ spec:
                                 certificate(s) by the Maven commands. Note that the
                                 root CA certificates are also imported into the created
                                 keystore.
-                              properties:
-                                key:
-                                  description: The key of the secret to select from.  Must
-                                    be a valid secret key.
-                                  type: string
-                                name:
-                                  description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                    TODO: Add other useful fields. apiVersion, kind,
-                                    uid?'
-                                  type: string
-                                optional:
-                                  description: Specify whether the Secret or its key
-                                    must be defined
-                                  type: boolean
-                              required:
-                              - key
-                              type: object
+                              items:
+                                description: SecretKeySelector selects a key of a
+                                  Secret.
+                                properties:
+                                  key:
+                                    description: The key of the secret to select from.  Must
+                                      be a valid secret key.
+                                    type: string
+                                  name:
+                                    description: 'Name of the referent. More info:
+                                      https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      TODO: Add other useful fields. apiVersion, kind,
+                                      uid?'
+                                    type: string
+                                  optional:
+                                    description: Specify whether the Secret or its
+                                      key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              type: array
                             cliOptions:
                               description: The CLI options that are appended to the
                                 list of arguments for Maven commands, e.g., `-V,--no-transfer-progress,-Dstyle.color=never`.
@@ -281,9 +292,69 @@ spec:
                                 - url
                                 type: object
                               type: array
+                            servers:
+                              description: Servers (auth)
+                              items:
+                                properties:
+                                  configuration:
+                                    additionalProperties:
+                                      type: string
+                                    type: object
+                                  id:
+                                    type: string
+                                  password:
+                                    type: string
+                                  username:
+                                    type: string
+                                type: object
+                              type: array
                             settings:
                               description: A reference to the ConfigMap or Secret
                                 key that contains the Maven settings.
+                              properties:
+                                configMapKeyRef:
+                                  description: Selects a key of a ConfigMap.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      description: 'Name of the referent. More info:
+                                        https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                        TODO: Add other useful fields. apiVersion,
+                                        kind, uid?'
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                secretKeyRef:
+                                  description: Selects a key of a secret.
+                                  properties:
+                                    key:
+                                      description: The key of the secret to select
+                                        from.  Must be a valid secret key.
+                                      type: string
+                                    name:
+                                      description: 'Name of the referent. More info:
+                                        https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                        TODO: Add other useful fields. apiVersion,
+                                        kind, uid?'
+                                      type: string
+                                    optional:
+                                      description: Specify whether the Secret or its
+                                        key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                              type: object
+                            settingsSecurity:
+                              description: A reference to the ConfigMap or Secret
+                                key that contains the security of the Maven settings.
                               properties:
                                 configMapKeyRef:
                                   description: Selects a key of a ConfigMap.
@@ -329,49 +400,6 @@ spec:
                         name:
                           description: name of the task
                           type: string
-                        resources:
-                          description: 'Deprecated: no longer in use'
-                          items:
-                            description: 'ResourceSpec represent an attached resource
-                              which will be materialized as a file on the running
-                              `Pod` TODO: we should deprecate in future releases in
-                              favour of mount, openapi or camel traits'
-                            properties:
-                              compression:
-                                description: if the content is compressed (base64
-                                  encrypted)
-                                type: boolean
-                              content:
-                                description: the source code (plain text)
-                                type: string
-                              contentKey:
-                                description: the confimap key holding the source content
-                                type: string
-                              contentRef:
-                                description: the confimap reference holding the source
-                                  content
-                                type: string
-                              contentType:
-                                description: the content type (tipically text or binary)
-                                type: string
-                              mountPath:
-                                description: the mount path on destination `Pod`
-                                type: string
-                              name:
-                                description: the name of the specification
-                                type: string
-                              path:
-                                description: the path where the file is stored
-                                type: string
-                              rawContent:
-                                description: the source code (binary)
-                                format: byte
-                                type: string
-                              type:
-                                description: the kind of data to expect
-                                type: string
-                            type: object
-                          type: array
                         runtime:
                           description: the configuration required for the runtime
                             application
@@ -403,11 +431,6 @@ spec:
                                       - groupId
                                       type: object
                                     type: array
-                                  metadata:
-                                    additionalProperties:
-                                      type: string
-                                    description: 'Deprecated: not in use'
-                                    type: object
                                 required:
                                 - dependencies
                                 type: object
@@ -452,68 +475,6 @@ spec:
                           - provider
                           - version
                           type: object
-                        sources:
-                          description: 'Deprecated: no longer in use the source code
-                            for the Route(s)'
-                          items:
-                            description: SourceSpec defines the configuration for
-                              one or more routes to be executed in a certain Camel
-                              DSL language
-                            properties:
-                              compression:
-                                description: if the content is compressed (base64
-                                  encrypted)
-                                type: boolean
-                              content:
-                                description: the source code (plain text)
-                                type: string
-                              contentKey:
-                                description: the confimap key holding the source content
-                                type: string
-                              contentRef:
-                                description: the confimap reference holding the source
-                                  content
-                                type: string
-                              contentType:
-                                description: the content type (tipically text or binary)
-                                type: string
-                              interceptors:
-                                description: Interceptors are optional identifiers
-                                  the org.apache.camel.k.RoutesLoader uses to pre/post
-                                  process sources
-                                items:
-                                  type: string
-                                type: array
-                              language:
-                                description: specify which is the language (Camel
-                                  DSL) used to interpret this source code
-                                type: string
-                              loader:
-                                description: Loader is an optional id of the org.apache.camel.k.RoutesLoader
-                                  that will interpret this source at runtime
-                                type: string
-                              name:
-                                description: the name of the specification
-                                type: string
-                              path:
-                                description: the path where the file is stored
-                                type: string
-                              property-names:
-                                description: List of property names defined in the
-                                  source (e.g. if type is "template")
-                                items:
-                                  type: string
-                                type: array
-                              rawContent:
-                                description: the source code (binary)
-                                format: byte
-                                type: string
-                              type:
-                                description: Type defines the kind of source described
-                                  by this object
-                                type: string
-                            type: object
-                          type: array
                         steps:
                           description: the list of steps to execute (see pkg/builder/)
                           items:
@@ -538,6 +499,9 @@ spec:
                           type: object
                         contextDir:
                           description: can be useful to share info with other tasks
+                          type: string
+                        executorImage:
+                          description: docker image to use
                           type: string
                         image:
                           description: final image name
@@ -737,6 +701,11 @@ spec:
               image:
                 description: the image name built
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  for this Build.
+                format: int64
+                type: integer
               phase:
                 description: describes the phase
                 type: string

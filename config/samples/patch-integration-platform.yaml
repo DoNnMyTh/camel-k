@@ -24,7 +24,7 @@ spec:
   # The profile to be implemented by default
   # ie. OpenShift, Kubernetes, Knative
   #
-  profile: Openshift
+  profile: OpenShift
   #
   #
   # Options propagated to integrations
@@ -72,6 +72,13 @@ spec:
     # Configuration for a custom maven repository
     #
     maven:
+    #
+    # CLI options passed to the Maven commands to be executed
+    #
+    # cliOptions:
+    #   - --show-version
+    #   - --batch-mode
+    #
     #
     # Location of the local Maven repository
     #
@@ -123,11 +130,9 @@ spec:
     #
     #  insecure: true | false
   kamelet: {}
-  resources: {}
 status:
   build:
     maven:
       settings: {}
     registry: {}
   kamelet: {}
-  resources: {}

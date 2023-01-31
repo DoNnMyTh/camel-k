@@ -23,7 +23,7 @@ import (
 	v1 "github.com/apache/camel-k/pkg/apis/camel/v1"
 )
 
-// NewRuntimeCatalog --.
+// NewRuntimeCatalog creates a runtime catalog with the given catalog spec.
 func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 	catalog := RuntimeCatalog{}
 	catalog.CamelCatalogSpec = spec
@@ -32,6 +32,7 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 	catalog.schemesByID = make(map[string]v1.CamelScheme)
 	catalog.languageDependencies = make(map[string]string)
 	catalog.javaTypeDependencies = make(map[string]string)
+	catalog.loaderByArtifact = make(map[string]string)
 
 	for id, artifact := range catalog.Artifacts {
 		for _, scheme := range artifact.Schemes {
@@ -66,10 +67,14 @@ func NewRuntimeCatalog(spec v1.CamelCatalogSpec) *RuntimeCatalog {
 		}
 	}
 
+	for id, loader := range catalog.Loaders {
+		catalog.loaderByArtifact[loader.ArtifactID] = id
+	}
+
 	return &catalog
 }
 
-// RuntimeCatalog --.
+// RuntimeCatalog represents the data structure for a runtime catalog.
 type RuntimeCatalog struct {
 	v1.CamelCatalogSpec
 
@@ -78,17 +83,44 @@ type RuntimeCatalog struct {
 	schemesByID          map[string]v1.CamelScheme
 	languageDependencies map[string]string
 	javaTypeDependencies map[string]string
+	loaderByArtifact     map[string]string
 }
 
-// HasArtifact --.
+// HasArtifact checks if the given artifact is present in the catalog.
 func (c *RuntimeCatalog) HasArtifact(artifact string) bool {
-	if !strings.HasPrefix(artifact, "camel-") {
-		artifact = "camel-" + artifact
+	a := artifact
+	if !strings.HasPrefix(a, "camel-") {
+		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+			a = "camel-quarkus-" + a
+		} else {
+			a = "camel-" + a
+		}
 	}
 
-	_, ok := c.Artifacts[artifact]
+	_, ok := c.Artifacts[a]
 
 	return ok
+}
+
+// HasLoaderByArtifact checks if the given artifact is a loader in the catalog.
+func (c *RuntimeCatalog) HasLoaderByArtifact(artifact string) bool {
+	a := artifact
+	if !strings.HasPrefix(a, "camel-") {
+		if c.Runtime.Provider == v1.RuntimeProviderQuarkus {
+			a = "camel-quarkus-" + a
+		} else {
+			a = "camel-" + a
+		}
+	}
+
+	_, ok := c.loaderByArtifact[a]
+
+	return ok
+}
+
+// IsValidArtifact returns true if the given artifact is an artifact or loader in the catalog.
+func (c *RuntimeCatalog) IsValidArtifact(artifact string) bool {
+	return c.HasArtifact(artifact) || c.HasLoaderByArtifact(artifact)
 }
 
 // GetArtifactByScheme returns the artifact corresponding to the given component scheme.
@@ -147,17 +179,32 @@ func (c *RuntimeCatalog) VisitSchemes(visitor func(string, v1.CamelScheme) bool)
 	}
 }
 
-// DecodeComponent parses an URI and return a camel artifact and a scheme.
+// DecodeComponent parses the given URI and return a camel artifact and a scheme.
 func (c *RuntimeCatalog) DecodeComponent(uri string) (*v1.CamelArtifact, *v1.CamelScheme) {
 	uriSplit := strings.SplitN(uri, ":", 2)
 	if len(uriSplit) < 2 {
 		return nil, nil
 	}
 	uriStart := uriSplit[0]
-	scheme, ok := c.GetScheme(uriStart)
 	var schemeRef *v1.CamelScheme
-	if ok {
+	if scheme, ok := c.GetScheme(uriStart); ok {
 		schemeRef = &scheme
 	}
 	return c.GetArtifactByScheme(uriStart), schemeRef
+}
+
+// IsResolvable checks given URI for proper Camel format (e.g. resolvable scheme).
+func (c *RuntimeCatalog) IsResolvable(uri string) bool {
+	uriSplit := strings.SplitN(uri, ":", 2)
+
+	if len(uriSplit) == 0 {
+		return false
+	}
+
+	if scheme := uriSplit[0]; strings.HasPrefix(scheme, "{{") && strings.HasSuffix(scheme, "}}") {
+		// scheme is a property placeholder (e.g. {{url}}) which is not resolvable
+		return false
+	}
+
+	return true
 }

@@ -472,6 +472,7 @@ Let's try sorting out these issues in the route (we publish here the final versi
 // camel-k: language=java
 
 import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.ClaimCheckOperation;
 import org.apache.camel.Exchange;
 
 public class Earthquake extends RouteBuilder {
@@ -760,6 +761,8 @@ spec:
 <1> The definition part starts with general information about the Kamelet
 <2> Definition of the period parameter (used with the `{\{period}}` placeholder in the route)
 <3> Definition of the lookAhead parameter
+
+TIP: In other scenarios, you might want to refer to non-required parameters in the Kamelet's `spec.template` using the `{{?optionalParam}}` syntax; that might be helpful for those cases where the non-required parameter does not define a default value in the Kamelet's `spec.definition.properties`. For more information, you can refer to the using Camel property placeholder syntax in the Camel Core project documentation.
 
 === Step 7: add metadata and sugar
 

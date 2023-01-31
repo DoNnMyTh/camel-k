@@ -94,6 +94,8 @@ type EndpointProperties struct {
 
 // KameletBindingStatus specify the status of a binding
 type KameletBindingStatus struct {
+	// ObservedGeneration is the most recent generation observed for this KameletBinding.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// Phase --
 	Phase KameletBindingPhase `json:"phase,omitempty"`
 	// Conditions --
@@ -118,6 +120,8 @@ type KameletBindingCondition struct {
 	Reason string `json:"reason,omitempty"`
 	// A human readable message indicating details about the transition.
 	Message string `json:"message,omitempty"`
+	// Pods collect health and conditions information from the owned PODs
+	Pods []v1.PodCondition `json:"pods,omitempty"`
 }
 
 // KameletBindingConditionType --
@@ -126,6 +130,8 @@ type KameletBindingConditionType string
 const (
 	// KameletBindingConditionReady --
 	KameletBindingConditionReady KameletBindingConditionType = "Ready"
+	// KameletBindingIntegrationConditionError is used to report the error on the generated Integration
+	KameletBindingIntegrationConditionError KameletBindingConditionType = "IntegrationError"
 )
 
 // KameletBindingPhase --

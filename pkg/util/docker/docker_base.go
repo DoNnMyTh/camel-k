@@ -18,7 +18,7 @@ limitations under the License.
 package docker
 
 import (
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/apache/camel-k/pkg/util"
@@ -40,7 +40,7 @@ var IntegrationWorkingDirectory = ""
 var NetworkName = "host"
 
 // Internal variables.
-var (
+const (
 	dockerEndpointSeparator = "/"
 	containerFileSeparator  = "/"
 	latestTag               = "latest"
@@ -56,7 +56,7 @@ func BuildImageArgs(dockerFileDir string, imageName string, sourceDir string) []
 	args = append(args, "build")
 
 	// Add path to Dockerfile:
-	dockerFile := path.Join(dockerFileDir, "Dockerfile")
+	dockerFile := filepath.Join(dockerFileDir, "Dockerfile")
 
 	args = append(args, DockerfilePathArg(dockerFile)...)
 
@@ -174,7 +174,7 @@ func GetFullDockerImage(dockerImageName string, tag string) string {
 	return strings.Join(fullImagePath, dockerEndpointSeparator)
 }
 
-// GetBaseImagePath --.
+// GetBaseImagePath returns Docker base image path.
 func GetBaseImagePath() string {
 	return RegistryName + dockerEndpointSeparator + BaseImageName
 }

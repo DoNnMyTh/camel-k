@@ -19,6 +19,7 @@ package trait
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
 
 	serving "knative.dev/serving/pkg/apis/serving/v1"
 
@@ -37,6 +39,11 @@ import (
 	"github.com/apache/camel-k/pkg/util/camel"
 	"github.com/apache/camel-k/pkg/util/kubernetes"
 	"github.com/apache/camel-k/pkg/util/test"
+)
+
+var (
+	crMountPath = filepath.ToSlash(camel.ConfigResourcesMountPath)
+	rdMountPath = filepath.ToSlash(camel.ResourcesDefaultMountPath)
 )
 
 func TestConfigureJvmTraitInRightPhasesDoesSucceed(t *testing.T) {
@@ -67,7 +74,7 @@ func TestConfigureJvmTraitInWrongIntegrationKitPhaseDoesNotSucceed(t *testing.T)
 
 func TestConfigureJvmDisabledTraitDoesNotSucceed(t *testing.T) {
 	trait, environment := createNominalJvmTest(v1.IntegrationKitTypePlatform)
-	trait.Enabled = BoolP(false)
+	trait.Enabled = pointer.Bool(false)
 
 	configured, err := trait.Configure(environment)
 	assert.Nil(t, err)
@@ -102,12 +109,12 @@ func TestApplyJvmTraitWithDeploymentResource(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	cp := strset.New("./resources", camel.ConfigResourcesMountPath, camel.ResourcesDefaultMountPath, "/mount/path").List()
+	cp := strset.New("./resources", crMountPath, rdMountPath, "/mount/path").List()
 	sort.Strings(cp)
 
 	assert.Equal(t, []string{
 		"-cp",
-		fmt.Sprintf("./resources:%s:%s:/mount/path", camel.ConfigResourcesMountPath, camel.ResourcesDefaultMountPath),
+		fmt.Sprintf("./resources:%s:%s:/mount/path", crMountPath, rdMountPath),
 		"io.quarkus.bootstrap.runner.QuarkusEntryPoint",
 	}, d.Spec.Template.Spec.Containers[0].Args)
 }
@@ -134,20 +141,20 @@ func TestApplyJvmTraitWithKNativeResource(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	cp := strset.New("./resources", camel.ConfigResourcesMountPath, camel.ResourcesDefaultMountPath, "/mount/path").List()
+	cp := strset.New("./resources", crMountPath, rdMountPath, "/mount/path").List()
 	sort.Strings(cp)
 
 	assert.Equal(t, []string{
 		"-cp",
-		fmt.Sprintf("./resources:%s:%s:/mount/path", camel.ConfigResourcesMountPath, camel.ResourcesDefaultMountPath),
+		fmt.Sprintf("./resources:%s:%s:/mount/path", crMountPath, rdMountPath),
 		"io.quarkus.bootstrap.runner.QuarkusEntryPoint",
 	}, s.Spec.Template.Spec.Containers[0].Args)
 }
 
 func TestApplyJvmTraitWithDebugEnabled(t *testing.T) {
 	trait, environment := createNominalJvmTest(v1.IntegrationKitTypePlatform)
-	trait.Debug = BoolP(true)
-	trait.DebugSuspend = BoolP(true)
+	trait.Debug = pointer.Bool(true)
+	trait.DebugSuspend = pointer.Bool(true)
 
 	d := appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
@@ -243,7 +250,7 @@ func TestApplyJvmTraitWithClasspath(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, []string{
 		"-cp",
-		fmt.Sprintf("./resources:%s:%s:/mount/path:%s:%s", camel.ConfigResourcesMountPath, camel.ResourcesDefaultMountPath,
+		fmt.Sprintf("./resources:%s:%s:/mount/path:%s:%s", crMountPath, rdMountPath,
 			"/path/to/another/dep.jar", "/path/to/my-dep.jar"),
 		"io.quarkus.bootstrap.runner.QuarkusEntryPoint",
 	}, d.Spec.Template.Spec.Containers[0].Args)
@@ -255,8 +262,8 @@ func createNominalJvmTest(kitType string) (*jvmTrait, *Environment) {
 	client, _ := test.NewFakeClient()
 
 	trait, _ := newJvmTrait().(*jvmTrait)
-	trait.Enabled = BoolP(true)
-	trait.PrintCommand = BoolP(false)
+	trait.Enabled = pointer.Bool(true)
+	trait.PrintCommand = pointer.Bool(false)
 	trait.Client = client
 
 	environment := &Environment{

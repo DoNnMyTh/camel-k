@@ -40,10 +40,13 @@ func createKanikoCacheWarmerPod(ctx context.Context, client client.Client, platf
 	// See:
 	// - https://kubernetes.io/docs/concepts/storage/persistent-volumes/#node-affinity
 	// - https://kubernetes.io/docs/concepts/storage/volumes/#local
-	// nolint: staticcheck
-	pvcName := platform.Status.Build.PersistentVolumeClaim
-	if persistentVolumeClaim, found := platform.Status.Build.PublishStrategyOptions[builder.KanikoPVCName]; found {
-		pvcName = persistentVolumeClaim
+	pvcName := platform.Status.Build.PublishStrategyOptions[builder.KanikoPVCName]
+
+	var warmerImage string
+	if image, found := platform.Status.Build.PublishStrategyOptions[builder.KanikoWarmerImage]; found {
+		warmerImage = image
+	} else {
+		warmerImage = fmt.Sprintf("%s:v%s", builder.KanikoDefaultWarmerImageName, defaults.KanikoVersion)
 	}
 
 	pod := corev1.Pod{
@@ -62,7 +65,7 @@ func createKanikoCacheWarmerPod(ctx context.Context, client client.Client, platf
 			Containers: []corev1.Container{
 				{
 					Name:  "warm-kaniko-cache",
-					Image: fmt.Sprintf("gcr.io/kaniko-project/warmer:v%s", defaults.KanikoVersion),
+					Image: warmerImage,
 					Args: []string{
 						"--cache-dir=" + builder.KanikoCacheDir,
 						"--image=" + platform.Status.Build.BaseImage,

@@ -14,6 +14,14 @@
 # limitations under the License.
 
 #
+# Use bash explicitly in this Makefile to avoid unexpected platform
+# incompatibilities among Linux distros.
+#
+SHELL := /bin/bash
+
+MAKE := make --no-print-directory
+
+#
 # Allows for resources to be loaded from outside the root location of
 # the kustomize config file. Ensures that resource don't need to be
 # copied around the file system.
@@ -48,8 +56,14 @@ MONITORING ?= false
 MONITORING_PORT ?= 8080
 # Health Port: integer
 HEALTH_PORT ?= 8081
+# Operator Logging Level: string [info, debug, 0, 1]
+LOGGING_LEVEL ?= info
+# Install default kamelets: [true|false]
+INSTALL_DEFAULT_KAMELETS ?= true
+# Uninstall all Camel K resources: [true|false]
+UNINSTALL_ALL ?=false
 
-CONFIG := ../config
+CONFIG := config
 MANAGER := $(CONFIG)/manager
 SAMPLES := $(CONFIG)/samples
 RBAC := $(CONFIG)/rbac
@@ -67,6 +81,8 @@ ROLE_TO_CROLE_PATCH := $(RBAC)/patch-role-to-clusterrole
 ROLEBIN_TO_CROLEBIN_PATCH := $(RBAC)/patch-rolebinding-to-clusterrolebinding
 # Operator patches
 PORTS_PATCH := patch-ports
+LOG_LEVEL_PATCH := patch-log-level
+INSTALL_DEFAULT_KAMELETS_PATCH := patch-install-default-kamelets
 IMAGE_PULL_POLICY_PATCH := patch-image-pull-policy-always
 WATCH_NAMESPACE_PATCH := patch-watch-namespace-global
 # Platform patches
@@ -80,8 +96,8 @@ INT_PLATFORM_PATCH := patch-integration-platform
 #
 define set-kustomize-image
 	$(if $(filter $(IMAGE_NAME),$(CUSTOM_IMAGE):$(CUSTOM_VERSION)),,\
-
-		@cd $(1) && $(KUSTOMIZE) edit set image $(IMAGE_NAME)=$(CUSTOM_IMAGE):$(CUSTOM_VERSION))
+		@cd $(1) || exit 1 && \
+			$(KUSTOMIZE) edit set image $(IMAGE_NAME)=$(CUSTOM_IMAGE):$(CUSTOM_VERSION))
 endef
 
 #
@@ -91,7 +107,8 @@ endef
 # Parameter: directory of the kustomization.yaml
 #
 define set-kustomize-namespace
-	@cd $(1) && $(KUSTOMIZE) edit set namespace $(NAMESPACE)
+	@cd $(1) || exit 1 && \
+		$(KUSTOMIZE) edit set namespace $(NAMESPACE)
 endef
 
 #
@@ -105,16 +122,16 @@ endef
 # * kind of resources, eg. Deployment, Role
 #
 define add-remove-kind-patch
-	@(cd $(1) && \
-		$(KUSTOMIZE) edit $(2) patch --path $(3) --kind $(4))
+	@cd $(1) || exit 1 && \
+		$(KUSTOMIZE) edit $(2) patch --path $(3) --kind $(4) &> /dev/null
 endef
 
 #
 # Macro for adding / removing the prometheus resources for monitoring
 #
 define add-remove-operator-monitoring
-	cd $(1) && \
-		$(KUSTOMIZE) edit $(2) resource ../$(CONFIG)/prometheus
+	@cd $(1) || exit 1 && \
+		$(KUSTOMIZE) edit $(2) resource ../$(CONFIG)/prometheus &> /dev/null
 endef
 
 .PHONY: have-platform check_admin setup-cluster .setup-kubernetes .setup-openshift setup
@@ -152,25 +169,41 @@ endif
 check-admin: kubectl
 	@output=$$(kubectl get crd 2>&1) || (echo "****" && echo "**** ERROR: Cannot continue as user is not a Cluster-Admin ****" && echo "****"; exit 1)
 
+crd-api-support: kubectl
+ifndef CRD_SUPPORT
+CRD_SUPPORT=$(shell script/check_crd_api_support.sh)
+endif
+
+check-crd-api-support: crd-api-support
+ifneq ($(CRD_SUPPORT),OK)
+	$(error *** CRD API FAILURE: $(CRD_SUPPORT) ****)
+endif
+
+#---
 #
-# Setup the cluster installation by installing crds and cluster roles.
+#@ setup-cluster
+#
+#== Setup the cluster installation by installing crds and cluster roles.
 #
 # Will either call setup-cluster-openshift (then setup-cluster-kubernetes) or
 # setup-cluster-kubernetes depending on the identity of the cluster
 #
-# Cluster-admin privileges are required.
+#=== Cluster-admin privileges are required.
 #
-# PARAMETERS:
-#   NAMESPACE: Sets the namespace for the resources
-#   PLATFORM:  Override the discovered platform, if required
-#   DRY_RUN:     true - Prints the resources to be applied instead of applying them
+#* PARAMETERS:
+#** NAMESPACE: Set the namespace for the resources
+#** PLATFORM:  Override the discovered platform, if required
+#** DRY_RUN:   Print the resources to be applied instead of applying them [true|false]
 #
-setup-cluster: check-admin have-platform kustomize kubectl
+#---
+setup-cluster: check-admin check-crd-api-support have-platform kustomize kubectl
 # Set the namespace in the setup-cluster kustomization yaml
 	@$(call set-kustomize-namespace,$@)
 ifeq ($(PLATFORM), openshift)
 	@for res in $(RBAC_OS)/operator-cluster*; do \
-		(cd $@ && $(KUSTOMIZE) edit add resource ../$$res); \
+		cd $@ || exit 1 && \
+			$(KUSTOMIZE) edit add resource ../$$res && \
+			cd - &> /dev/null; \
 	done
 endif
 #
@@ -181,24 +214,28 @@ endif
 ifeq ($(DRY_RUN), false)
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | \
 		sed 's/$(PLACEHOLDER)/$(NAMESPACE)/' | \
-		kubectl apply -f -
+		kubectl apply --server-side -f -
 else
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | \
 		sed 's/$(PLACEHOLDER)/$(NAMESPACE)/'
 endif
 
+#---
 #
-# Setup the installation by installing roles and granting
-# privileges for the installing operator.
+#@ setup
 #
-# Cluster-admin privileges are required.
+#== Setup the installation by installing roles and granting privileges for the installing operator.
 #
-# PARAMETERS:
-#   NAMESPACE: Sets the namespace for the resources
-#   GLOBAL:    Converts all roles & bindings to cluster-level [true|false]
-#   PLATFORM:  Override the discovered platform, if required
-#   DRY_RUN:     true - Prints the resources to be applied instead of applying them
+#=== Calls setup-cluster
+#=== Cluster-admin privileges are required.
 #
+#* PARAMETERS:
+#** NAMESPACE: Set the namespace for the resources
+#** GLOBAL:    Convert all roles & bindings to cluster-level [true|false]
+#** PLATFORM:  Override the discovered platform, if required
+#** DRY_RUN:   Print the resources to be applied instead of applying them [true|false]
+#
+#---
 setup: setup-cluster
 # Set the namespace in the setup kustomization yaml
 	@$(call set-kustomize-namespace,$@)
@@ -212,7 +249,9 @@ else
 endif
 ifeq ($(PLATFORM), openshift)
 	@for res in $(RBAC_OS)/operator-role*; do \
-		(cd $@ && $(KUSTOMIZE) edit add resource ../$$res); \
+		cd $@ || exit 1 && \
+			$(KUSTOMIZE) edit add resource ../$$res && \
+			cd - &> /dev/null; \
 	done
 endif
 #
@@ -223,13 +262,13 @@ endif
 ifeq ($(DRY_RUN), false)
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | \
 		sed 's/$(PLACEHOLDER)/$(NAMESPACE)/' | \
-		kubectl apply -f -
+		kubectl apply --server-side -f -
 else
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | \
 		sed 's/$(PLACEHOLDER)/$(NAMESPACE)/'
 endif
 
-.PHONY: operator .operator-port-patch .operator-can-monitor
+.PHONY: operator .operator-port-patch .operator-can-monitor .operator-log-level-patch
 
 #
 # Customizes the port patch
@@ -240,34 +279,46 @@ endif
 	@sed -i 's/--health-port=.*/--health-port=$(HEALTH_PORT)/' $(MANAGER)/$(PORTS_PATCH).$(YAML)
 	@sed -i '/path:.*\/httpGet\/port/,/- op/{s/value: .*/value: $(HEALTH_PORT)/}' $(MANAGER)/$(PORTS_PATCH).$(YAML)
 
+#
+# Customizes the log level patch
+#
+.operator-log-level-patch:
+	@sed -i 's/    value:.*/    value: "$(LOGGING_LEVEL)"/' $(MANAGER)/$(LOG_LEVEL_PATCH).$(YAML)
+
 .operator-can-monitor: kubectl
 	@output=$$(kubectl get crd prometheusrules.monitoring.coreos.com 2>&1) || (echo "****" && echo "**** ERROR: Montoring not available as Prometheus CRDs not installed in cluster ****" && echo "****"; exit 1)
 
+#---
 #
-# Install the operator deployment and related resources
+#@ operator
 #
-# Cluster-admin privileges are required.
+#== Install the operator deployment and related resources.
 #
-# PARAMETERS:
-#   NAMESPACE:          Set the namespace to install the operator into
-#   PLATFORM:           Override the discovered platform, if required
-#   GLOBAL:             Sets the operator to watch all namespaces for custom resources [true|false]
-#   CUSTOM_IMAGE:       Set a custom operator image name
-#   CUSTOM_VERSION:     Set a custom operator image version/tag
-#   ALWAYS_PULL_IMAGES: Sets whether to always pull the operator image [true|false]
-#   MONITORING:         Adds the prometheus monitoring resources
-#   MONITORING_PORT:    Set a custom monitoring port
-#   HEALTH_PORT:        Set a custom health port
-#   DRY_RUN:            Prints the resources to be applied instead of applying them
+#=== Cluster-admin privileges are required.
 #
-operator: check-admin have-platform kustomize kubectl .operator-port-patch
+#* PARAMETERS:
+#** NAMESPACE:                Set the namespace to install the operator into
+#** PLATFORM:                 Override the discovered platform, if required
+#** GLOBAL:                   Set the operator to watch all namespaces for custom resources [true|false]
+#** CUSTOM_IMAGE:             Set a custom operator image name
+#** CUSTOM_VERSION:           Set a custom operator image version/tag
+#** ALWAYS_PULL_IMAGES:       Set whether to always pull the operator image [true|false]
+#** MONITORING:               Add the prometheus monitoring resources
+#** MONITORING_PORT:          Set a custom monitoring port
+#** HEALTH_PORT:              Set a custom health port
+#** LOGGING_LEVEL:            Set the level of logging [info|debug]
+#** INSTALL_DEFAULT_KAMELETS: Install the default Kamelets from catalog [true|false]
+#** DRY_RUN:                  Print the resources to be applied instead of applying them [true|false]
+#
+#---
+operator: check-admin have-platform check-crd-api-support kustomize kubectl .operator-port-patch .operator-log-level-patch
 ifeq ($(MONITORING), true)
 	@$(MAKE) -s .operator-can-monitor
 	@$(call add-remove-operator-monitoring,$@,add)
 else
 	@$(call add-remove-operator-monitoring,$@,remove)
 endif
-# Set the namespace in the setup kustomization yaml
+# Set the namespace in the operator kustomization yaml
 	@$(call set-kustomize-namespace,$@)
 # Set the image reference of the kustomization
 	@$(call set-kustomize-image,$@)
@@ -289,6 +340,20 @@ ifneq ($(MONITORING_PORT), 8080)
 else ifneq ($(HEALTH_PORT), 8081)
 	@$(call add-remove-kind-patch,$(MANAGER),add,$(PORTS_PATCH).$(YAML),Deployment)
 endif
+# Set the Log level of the operator
+ifneq ($(LOGGING_LEVEL), info)
+	@$(call add-remove-kind-patch,$(MANAGER),add,$(LOG_LEVEL_PATCH).$(YAML),Deployment)
+else ifneq ($(LOGGING_LEVEL), 0)
+		@$(call add-remove-kind-patch,$(MANAGER),add,$(LOG_LEVEL_PATCH).$(YAML),Deployment)
+else
+	@$(call add-remove-kind-patch,$(MANAGER),remove,$(LOG_LEVEL_PATCH).$(YAML),Deployment)
+endif
+# Set the INSTALL_DEFAULT_KAMELETS config depending on var
+ifeq ($(INSTALL_DEFAULT_KAMELETS),false)
+	@$(call add-remove-kind-patch,$(MANAGER),add,$(INSTALL_DEFAULT_KAMELETS_PATCH).$(YAML),Deployment)
+else
+	@$(call add-remove-kind-patch,$(MANAGER),remove,$(INSTALL_DEFAULT_KAMELETS_PATCH).$(YAML),Deployment)
+endif
 ifeq ($(DRY_RUN), false)
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | kubectl apply -f -
 else
@@ -307,22 +372,26 @@ endif
 # Customizes the samples patches for openshift
 #
 .platform-openshift-patch:
-	@sed -i 's/.*profile:.*/  profile: Openshift/' $(SAMPLES)/$(INT_PLATFORM_PATCH).$(YAML)
+	@sed -i 's/.*profile:.*/  profile: OpenShift/' $(SAMPLES)/$(INT_PLATFORM_PATCH).$(YAML)
 
+#---
 #
-# Install the integration platform
+#@ platform
 #
-# Cluster-admin privileges are required.
+#== Install the integration platform.
 #
-# PARAMETERS:
-#   NAMESPACE: Set the namespace to install the operator into
-#   PLATFORM:  Override the discovered platform, if required
-#   DRY_RUN:   Prints the resources to be applied instead of applying them [true,false]
+#=== Cluster-admin privileges are required.
 #
+#* PARAMETERS:
+#** NAMESPACE: Set the namespace to install the operator into
+#** PLATFORM:  Override the discovered platform, if required
+#** DRY_RUN:   Print the resources to be applied instead of applying them [true|false]
+#
+#---
 platform: have-platform kustomize kubectl
 # Cannot be a dependency as PLATFORM could contain 'ERROR: '
 	@$(MAKE) .platform-$(PLATFORM)-patch
-# Set the namespace in the setup kustomization yaml
+# Set the namespace in the platform kustomization yaml
 	@$(call set-kustomize-namespace,$@)
 ifeq ($(DRY_RUN), false)
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | kubectl apply -f -
@@ -332,19 +401,69 @@ endif
 
 .PHONY: example
 
+#---
 #
-# Installs the example integration
+#@ example
 #
-# PARAMETERS:
-#   NAMESPACE: Set the namespace to install the example into
-#   PLATFORM:  Override the discovered platform, if required
-#   DRY_RUN:   Prints the resources to be applied instead of applying them [true, false]
+#== Install the example integration.
 #
+#* PARAMETERS:
+#** NAMESPACE: Set the namespace to install the example into
+#** PLATFORM:  Override the discovered platform, if required
+#** DRY_RUN:   Print the resources to be applied instead of applying them [true|false]
+#
+#---
 example: kubectl
-# Set the namespace in the setup kustomization yaml
+# Set the namespace in the example kustomization yaml
 	@$(call set-kustomize-namespace,$@)
 ifeq ($(DRY_RUN), false)
 	@$(KUSTOMIZE) build $(KOPTIONS) $@ | kubectl apply -f -
 else
 	@$(KUSTOMIZE) build $(KOPTIONS) $@
 endif
+
+.PHONY: uninstall
+
+#---
+#
+#@ uninstall
+#
+#== Uninstall the resources previously installed by the platform, operator, setup, and setup-cluster targets.
+#
+#=== Cluster-admin privileges are required.
+#
+#* PARAMETERS:
+#** NAMESPACE:     Set the namespace to uninstall the resources from
+#** UNINSTALL_ALL: Uninstall all Camel K resources including crds and cluster roles installed by setup-cluster [true|false]
+#** DRY_RUN:       Print the resources to be applied instead of applying them [true|false]
+#
+#---
+uninstall: kubectl
+# Set the namespace in the all target kustomization yaml
+	@$(call set-kustomize-namespace, platform)
+	@$(call set-kustomize-namespace, operator)
+	@$(call set-kustomize-namespace, setup)
+ifeq ($(UNINSTALL_ALL), true)
+	@$(call set-kustomize-namespace, setup-cluster)
+endif
+ifeq ($(DRY_RUN), false)
+	@$(KUSTOMIZE) build $(KOPTIONS) platform | kubectl delete --ignore-not-found=true -f -
+	@$(KUSTOMIZE) build $(KOPTIONS) operator | kubectl delete --ignore-not-found=true -f -
+	@$(KUSTOMIZE) build $(KOPTIONS) setup    | kubectl delete --ignore-not-found=true -f -
+ifeq ($(UNINSTALL_ALL), true)
+	@$(KUSTOMIZE) build $(KOPTIONS) setup-cluster | kubectl delete --ignore-not-found=true -f -
+endif
+else
+	@$(KUSTOMIZE) build $(KOPTIONS) platform | kubectl delete --dry-run=client -f -
+	@$(KUSTOMIZE) build $(KOPTIONS) operator | kubectl delete --dry-run=client -f -
+	@$(KUSTOMIZE) build $(KOPTIONS) setup    | kubectl delete --dry-run=client -f -
+ifeq ($(UNINSTALL_ALL), true)
+	@$(KUSTOMIZE) build $(KOPTIONS) setup-cluster | kubectl delete --dry-run=client -f -
+endif
+endif
+
+.DEFAULT_GOAL := help
+.PHONY: help
+help: ## Show this help screen.
+	@#./script/help.sh $(MAKEFILE_LIST)
+	@awk 'BEGIN { printf "\nUsage: make \033[31m<PARAM1=val1 PARAM2=val2>\033[0m \033[36m<target>\033[0m\n"; printf "\nAvailable targets are:\n" } /^#@/ { printf "\033[36m%-15s\033[0m", $$2; subdesc=0; next } /^#===/ { printf "%-14s \033[32m%s\033[0m\n", " ", substr($$0, 5); subdesc=1; next } /^#==/ { printf "\033[0m%s\033[0m\n\n", substr($$0, 4); next } /^#\*\*/ { printf "%-14s \033[31m%s\033[0m\n", " ", substr($$0, 4); next } /^#\*/ && (subdesc == 1) { printf "\n"; next } /^#\-\-\-/ { printf "\n"; next }' $(MAKEFILE_LIST)

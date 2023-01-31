@@ -19,7 +19,7 @@ package camel
 
 import (
 	"context"
-	"path"
+	"path/filepath"
 
 	yaml2 "gopkg.in/yaml.v2"
 
@@ -93,22 +93,22 @@ func GenerateCatalog(
 		return nil, err
 	}
 
-	var caCert []byte
-	if mvn.CASecret != nil {
-		caCert, err = kubernetes.GetSecretRefData(ctx, client, namespace, mvn.CASecret)
+	var caCerts [][]byte
+	if mvn.CASecrets != nil {
+		caCerts, err = kubernetes.GetSecretsRefData(ctx, client, namespace, mvn.CASecrets)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return GenerateCatalogCommon(ctx, globalSettings, []byte(userSettings), caCert, mvn, runtime, providerDependencies)
+	return GenerateCatalogCommon(ctx, globalSettings, []byte(userSettings), caCerts, mvn, runtime, providerDependencies)
 }
 
 func GenerateCatalogCommon(
 	ctx context.Context,
 	globalSettings []byte,
 	userSettings []byte,
-	caCert []byte,
+	caCert [][]byte,
 	mvn v1.MavenSpec,
 	runtime v1.RuntimeSpec,
 	providerDependencies []maven.Dependency) (*RuntimeCatalog, error) {
@@ -148,7 +148,7 @@ func GenerateCatalogCommon(
 			return err
 		}
 
-		content, err := util.ReadFile(path.Join(tmpDir, "catalog.yaml"))
+		content, err := util.ReadFile(filepath.Join(tmpDir, "catalog.yaml"))
 		if err != nil {
 			return err
 		}
